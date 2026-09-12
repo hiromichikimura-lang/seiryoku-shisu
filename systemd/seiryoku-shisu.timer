@@ -1,0 +1,9 @@
+[Unit]
+Description=政党影響力指数を毎月1回更新する
+
+[Timer]
+OnCalendar=monthly
+Persistent=true
+
+[Install]
+WantedBy=timers.target
