@@ -3,13 +3,17 @@
 $I_p(t)$(国会の議席占有率)と$E_p(t)$(知事・市区町村長)は当初、単位が
 異なる(議席1つとポスト1つ)という理由で別建てにしていたが、2026-09に
 ユーザー指示で1つの合成指数$C_p(t)$へ統合した。合成の重みは既存の
-$E_p(t)$と同じ「人口の平方根」を国会にもそのまま適用する——国会を特別扱いせず
-「1つの巨大な選挙区(全国)」として他の自治体と同列に並べ、$\\sqrt{P_j}$を
-一律に適用する(ユーザー判断: 国会だけ別枠の重みを与えるとその重み自体が
-恣意的になるため)。結果として国会の重みは合成指数全体の2.63\\%程度にとどまり、
-国政の影響力が地方の首長ポスト全体の前では相対的に小さく評価されるが、
-これは「1つの機関 vs 1785自治体分の首長ポスト」という個数の非対称性を
-そのまま受け入れた結果であり、意図した挙動である([[seiryoku_shisu_design]]参照)。
+$E_p(t)$と同じ「人口の平方根」を土台にしつつ、国会だけは実際の議席数$n$も
+掛けた$\\sqrt{nP_{国}}$を使う——1機関=1票として数えると知事・市区町村長1人分と
+同格になってしまうため、議員1人ずつが有権者を代表するという解釈を採用した
+(2026-09にユーザー指示で$\\sqrt{P_e}$のみの旧式から変更、design_document.tex
+\\S2.2参照)。衆議院・参議院は任期・解散の有無が異なる別々の選挙であり、
+$\\sqrt{\\cdot}$の非線形性のため衆参を合算してから1回だけ$\\sqrt{n_{国}P_{国}}$を
+掛けるのと、衆参それぞれ自院の議席数$n_c$で$\\sqrt{n_cP_{国}}$を個別に掛けて
+から合成するのとでは異なる値になる。後者(分離)を採用した
+(2026-09にユーザー指摘、\\texttt{compute_combined_index}参照)。
+知事・市区町村長は1ポスト=1人なので$n=1$、$\\sqrt{nP_j}=\\sqrt{P_j}$のまま
+変わらない。
 
 都道府県議会・市区町村議会は2026-09にユーザー判断で対象から除外済み——
 地方議会には(a) 自民党系候補の多くが党名を出さず無所属で出馬する一方で
@@ -141,6 +145,16 @@ def weighted_share_by_jurisdiction(entries: list[tuple[dict[str, float], float]]
 def compute_assembly_index(diet_seats: dict[str, dict[str, int]]) -> dict[str, float]:
     """議会指数 $I_p(t)$: 国会(衆参合算)の議席占有率 $\\phi_p^{(国会)}(t)$。
 
+    ここでの「衆参合算」は単なる議席数の比率(線形量)であり、衆参それぞれの
+    占有率を自院の議席数で加重平均した値と数学的に完全に一致する
+    ($\\sum_c n_c\\phi_p^{(c)} / \\sum_c n_c$は各院の生の議席数をそのまま足し合わせるのと同じ)。
+    したがって衆参を分けて計算しても同じ結果になり、単純合算のままで問題ない。
+    これは\\texttt{compute_combined_index}の$\\sqrt{n_eP_e}$のような非線形(平方根)の
+    重みを衆参合算後の総議席数に対して掛ける場合とは事情が異なる——非線形な
+    重みでは「先に合算してから重みを掛ける」と「院ごとに重みを掛けてから
+    合算する」で異なる値になるため、\\texttt{compute_combined_index}では衆参を
+    分離している(2026-09にユーザー指摘、design_document.tex \\S2.2参照)。
+
     国政政党の集合は衆参の会派構成そのものから導出し(\\texttt{national_parties_from_diet}参照)、
     それ以外の地域政党は無所属・諸派に一括する(実質的に発生しないが、関数の
     一貫性のため引数は残す)。
@@ -240,18 +254,21 @@ def compute_executive_index(national_parties: set[str] | None = None, weight_fn=
 
 
 def compute_combined_index(weight_fn=None) -> dict:
-    """政党インパクト指数 $C_p(t)$: 国会 + 既知の知事・市区町村長を、
-    人口の平方根$\\sqrt{P_j}$で一律に加重した単一の合成指数。
+    """政党インパクト指数 $C_p(t)$: 国会(衆参それぞれ別枠)+ 既知の知事・
+    市区町村長を、人口と議席・ポスト数の積の平方根$\\sqrt{n_jP_j}$で加重した
+    単一の合成指数。
 
-    $$C_p(t) = \\frac{\\sqrt{P_{国}}\\cdot\\phi_p^{(国会)}(t)
+    $$C_p(t) = \\frac{\\sum_{c\\in\\{衆,参\\}}\\sqrt{n_cP_{国}}\\cdot\\phi_p^{(c)}(t)
                        + \\sum_{j\\in 既知の自治体} \\sqrt{P_j}\\cdot\\mathbb{1}[党(j,t)=p]}
-                      {\\sqrt{P_{国}} + \\sum_{j} \\sqrt{P_j}}$$
+                      {\\sum_{c}\\sqrt{n_cP_{国}} + \\sum_{j} \\sqrt{P_j}}$$
 
-    国会を特別扱いせず「1つの選挙区(全国)」として他の自治体と同列に並べる
-    (2026-09にユーザー指示で$I_p(t)$・$E_p(t)$の別建てから統合、モジュール
-    docstring参照)。国会の重みは合成指数全体の2.63\\%程度にとどまるが、これは
-    「1機関 vs 1785自治体分の首長ポスト」という個数の非対称性をそのまま
-    受け入れた結果であり、意図した挙動である。
+    衆院・参院は現在の議席数$n_c$も掛けるが、$\\sqrt{\\cdot}$が非線形なため
+    「衆参の議席をまず合算してから$\\sqrt{n_{国}P_{国}}$を1回だけ掛ける」のとは
+    異なる値になる——$n_{衆}, n_{参}$を個別に立てたほうが、院をまたいで
+    合算した場合より重みの合計が大きくなる($\\sqrt{a}+\\sqrt{b} \\geq \\sqrt{a+b}$、
+    2026-09にユーザー指摘で衆参合算から分離、design_document.tex \\S2.2参照)。
+    知事・市区町村長は$n_j=1$なので$\\sqrt{n_jP_j}=\\sqrt{P_j}$のまま
+    (モジュールdocstring参照)。
     """
     import math
 
@@ -266,17 +283,16 @@ def compute_combined_index(weight_fn=None) -> dict:
         shugiin_district_pct=_latest_shugiin_district_pct(),
         sangiin_district_pct=_latest_sangiin_district_pct(),
     )
-    kokkai = {}
-    for chamber_seats in diet_seats.values():
-        for name, n in chamber_seats.items():
-            kokkai[name] = kokkai.get(name, 0) + n
-    diet_phi = _phi(kokkai, national_parties)
     national_pop = population.national_population()
 
     entries, known_jurisdictions, total_jurisdictions = _executive_jurisdiction_entries(
         national_parties, weight_fn
     )
-    entries.append((diet_phi, weight_fn(national_pop)))
+    for chamber_seats in diet_seats.values():
+        n_c = sum(chamber_seats.values())
+        if n_c == 0:
+            continue
+        entries.append((_phi(chamber_seats, national_parties), math.sqrt(n_c * national_pop)))
 
     return {
         "share": weighted_share_by_jurisdiction(entries),

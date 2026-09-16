@@ -110,9 +110,11 @@ def test_effective_party_shares_folds_local_endorsement_into_independent():
     assert shares == {"無所属": 1.0}
 
 
-def test_compute_combined_index_weights_diet_and_jurisdictions_by_sqrt_population(monkeypatch):
-    """C_p(t)は国会を「1つの巨大な選挙区」として、他の自治体と同じsqrt(人口)で
-    一律加重する(体レベルの特別扱いをしない、2026-09の統合方針)。"""
+def test_compute_combined_index_weights_diet_by_seat_count_times_sqrt_population(monkeypatch):
+    """C_p(t)は国会だけ実際の議席数nも掛けたsqrt(n*人口)で加重し、知事・市区町村長は
+    n=1のままsqrt(人口)で加重する(2026-09の設計変更、design_document.tex \\S2.2参照)。
+    衆参は合算せず、それぞれ自院の議席数で別々に重みを立てる
+    (sqrtの非線形性により合算した場合と値が変わるため)。"""
     diet_seats = {
         "衆議院": {"自由民主党": 4, "無所属": 1},
         "参議院": {"自由民主党": 1, "公明党": 5},  # どちらも5議席で政党要件(a)を満たす
@@ -131,13 +133,22 @@ def test_compute_combined_index_weights_diet_and_jurisdictions_by_sqrt_populatio
 
     result = compute_combined_index()
 
-    # 国会(自民5・公明5・無所属1、合計11議席)とA県知事(公明1人分)が
-    # どちらもsqrt(10000)=100で等しい重みを持つ
-    diet_ldp, diet_komei, diet_ind = 5 / 11, 5 / 11, 1 / 11
-    total_w = 200
-    assert result["share"]["自由民主党"] == diet_ldp * 100 / total_w
-    assert result["share"]["公明党"] == (diet_komei * 100 + 1.0 * 100) / total_w
-    assert result["share"]["無所属"] == diet_ind * 100 / total_w
+    # 衆議院(自民4・無所属1、合計5議席)、参議院(自民1・公明5、合計6議席)、
+    # A県知事(公明1人分、n=1)をそれぞれ別枠のsqrt(n*人口)で重み付けて合成する
+    import math
+
+    shugiin_w = math.sqrt(5 * 10000)
+    sangiin_w = math.sqrt(6 * 10000)
+    gov_w = math.sqrt(10000)
+    total_w = shugiin_w + sangiin_w + gov_w
+
+    ldp = shugiin_w * (4 / 5) + sangiin_w * (1 / 6)
+    komei = sangiin_w * (5 / 6) + gov_w * 1.0
+    ind = shugiin_w * (1 / 5)
+
+    assert result["share"]["自由民主党"] == ldp / total_w
+    assert result["share"]["公明党"] == komei / total_w
+    assert result["share"]["無所属"] == ind / total_w
     assert result["known_jurisdictions"] == 1
     assert abs(sum(result["share"].values()) - 1.0) < 1e-9
 

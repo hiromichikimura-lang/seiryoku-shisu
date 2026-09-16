@@ -1,15 +1,21 @@
-"""党派転換で重み付けた注目度指数の変種 $W_p^{\\text{turnover}}(T)$(design_document.tex
-\\S7.1)。首長(知事・市区町村長)ぶんのみ実装している——議会側は「選挙前後の議席数の
-差分」を求めるのに前回選挙時点の当選者データを新たに取得する必要があり(現状の
-municipal_registryは直近の選挙結果しか保持していない)、今後の課題として未着手。
+"""$C_p(T)$を補う「党派転換指数」$W_p^{\\text{turnover}}(T)$(design_document.texの
+「党派転換指数(補助指標)」節を参照)。$C_p(T)$が「その期間の選挙結果そのものの
+シェア」を見るのに対し、こちらは「前任者から政党が実際に入れ替わった選挙だけ」を
+見る、勢いの方向に特化した指標。首長(知事・市区町村長)ぶんのみ実装している——
+議会側は「選挙前後の議席数の差分」を求めるのに前回選挙時点の当選者データを
+新たに取得する必要があり(現状のmunicipal_registryは直近の選挙結果しか保持
+していない)、今後の課題として未着手。
 
 $$\\Delta s_p(e) = s_p(e\\text{後}) - s_p(e\\text{前}), \\qquad
-W_p^{\\text{turnover}}(T) = \\sum_{e:\\ 投票日(e)\\in T} \\log B_{\\text{自治体}(e)} \\cdot \\max(\\Delta s_p(e), 0)$$
+W_p^{\\text{turnover}}(T) = \\sum_{e:\\ 投票日(e)\\in T} \\sqrt{P_{\\text{自治体}(e)}} \\cdot \\max(\\Delta s_p(e), 0)$$
 
-$B$を対数で使うのは既存の$W_p(T)$(attention_index.py)と同じ理由(自治体間の
-桁違いの予算差で最大の自治体だけに支配されるのを防ぐ)。
+重みに人口の平方根を使うのは$C_p(T)$と同じ理由(index.pyのペンローズの平方根則、
+2026-09に対数重みのattention_index.pyから統一)。以前は自治体の予算の対数を
+使っていたが、$C_p(T)$のために対数重みを検討して却下した経緯(自治体の「個数」に
+埋もれてほぼ均等重みになってしまう)がそのままこの指標にも当てはまるため、
+一貫性のために置き換えた。
 
-当選者・前任者どちらも[[seiryoku_shisu_design]]の$E_p(t)$と同じロジック
+当選者・前任者どちらも[[seiryoku_shisu_design]]の$C_p(T)$と同じロジック
 (index._effective_party_shares)で推薦・支持を反映した{政党: 按分比率}を持つ
 (winner_shares/predecessor_shares、どちらも合計1.0)。首長選挙は1議席なので、
 どちらも無所属で推薦も無い場合は{"無所属": 1.0}同士の比較になり$\\Delta=0$、
@@ -40,7 +46,7 @@ from datetime import date, timedelta
 from pathlib import Path
 
 from . import municipal_registry, registry
-from .fetch import budgets, go2senkyo, jichisoken
+from .fetch import go2senkyo, jichisoken, population
 from .index import _effective_party_shares
 from .lineage import canonicalize
 
@@ -53,7 +59,7 @@ class TurnoverEvent:
     vote_date: str
     winner_shares: dict[str, float]
     predecessor_shares: dict[str, float]
-    budget: int
+    population: int
 
 
 def _two_most_recent_completed(jichitai_id: int) -> list:
@@ -172,7 +178,7 @@ def _build_term_chain(jichitai_id: int, min_year: int) -> list[dict]:
     (ユーザー指示: 前任者だけでなく前々任者・さらにその前も全部たどる。
     ただし無制限に遡っても、jichisoken(全国首長名簿、遡れるのは2018年分まで)で
     無所属を仕分けられない年は結局「形式上の無所属」しか分からず、
-    E_p(t)再構成の実益が薄いため、min_year=2018を実質的な下限とする)。
+    C_p(T)再構成の実益が薄いため、min_year=2018を実質的な下限とする)。
     """
     chain: list[dict] = []
     for row in _all_completed(jichitai_id):
@@ -239,7 +245,7 @@ def _predecessor_endorsing_parties(
 def _turnover_event(
     jichitai_id: int,
     name: str,
-    budget: int | None,
+    population_count: int | None,
     endorsing_parties: list[str],
     predecessor_cache: dict | None = None,
     national_parties: set[str] | None = None,
@@ -249,11 +255,11 @@ def _turnover_event(
     突き合わせる。前回選挙が確認できない(初めての選挙、データ欠落等)場合はNone。
     predecessor_cacheが渡されればそちらを優先し(ネットワーク取得を省略)、
     無ければその場でライブ取得する。national_partiesを渡すと、それ以外の政党
-    (地域政党等)を無所属・諸派に一括する($I_p, E_p$と同じ方針、[[seiryoku_shisu_design]]参照)。
+    (地域政党等)を無所属・諸派に一括する($C_p(T)$と同じ方針、[[seiryoku_shisu_design]]参照)。
     predecessor_endorsements_by_yearを渡すと、前任者側も当選時点の年版データで
     推薦・支持政党を仕分ける(モジュールdocstring参照)。
     """
-    if budget is None:
+    if population_count is None:
         return None
     cached = (predecessor_cache or {}).get(str(jichitai_id))
     if cached is not None:
@@ -272,8 +278,13 @@ def _turnover_event(
         vote_date=data["latest_vote_date"],
         winner_shares=winner_shares,
         predecessor_shares=predecessor_shares,
-        budget=budget,
+        population=population_count,
     )
+
+
+def _event_weight(event: TurnoverEvent) -> float:
+    """イベント1件の重み$\\sqrt{P_e}$。人口が0以下(未確認)なら0。"""
+    return math.sqrt(event.population) if event.population > 0 else 0.0
 
 
 def _delta_scores(event: TurnoverEvent, gain: bool) -> dict[str, float]:
@@ -283,9 +294,9 @@ def _delta_scores(event: TurnoverEvent, gain: bool) -> dict[str, float]:
     表と裏の関係になる(全政党で合計すると常に一致する)。
     """
     scores: dict[str, float] = {}
-    if event.budget <= 0:
+    if event.population <= 0:
         return scores
-    weight = math.log(event.budget)
+    weight = _event_weight(event)
     parties = set(event.winner_shares) | set(event.predecessor_shares)
     for party in parties:
         diff = event.winner_shares.get(party, 0.0) - event.predecessor_shares.get(party, 0.0)
@@ -308,7 +319,7 @@ def _loss_score_event(event: TurnoverEvent) -> dict[str, float]:
 def _net_score_event(event: TurnoverEvent) -> dict[str, float]:
     """1件のTurnoverEventの正味の党派間シェア移動({政党: 符号付きスコア})。
     $W_p^{\\text{turnover}} - L_p^{\\text{turnover}}$、すなわち$\\max(\\cdot,0)$の
-    クリップを外した$\\log B \\cdot \\Delta s_p^{(b)}(e)$そのもの。winner_shares・
+    クリップを外した$\\sqrt{P}\\cdot \\Delta s_p(e)$そのもの。winner_shares・
     predecessor_sharesは共に合計1.0なので、1件のイベントについて全政党で合計すると
     常に0になる(ある政党の純増は別の政党の純減の裏返し、というゼロサム)。
     $W_p^{\\text{turnover}}$は「奪取」だけを見るため常に非負(累積も単調増加)になる
@@ -316,9 +327,9 @@ def _net_score_event(event: TurnoverEvent) -> dict[str, float]:
     この符号付きの版は、月次・累積のどちらでも実際に負の値を取りうる。
     """
     scores: dict[str, float] = {}
-    if event.budget <= 0:
+    if event.population <= 0:
         return scores
-    weight = math.log(event.budget)
+    weight = _event_weight(event)
     parties = set(event.winner_shares) | set(event.predecessor_shares)
     for party in parties:
         diff = event.winner_shares.get(party, 0.0) - event.predecessor_shares.get(party, 0.0)
@@ -339,8 +350,8 @@ def turnover_events(days: int | None = 30) -> list[TurnoverEvent]:
 
     cutoff = (date.today() - timedelta(days=days)).isoformat() if days is not None else None
 
-    muni_budgets = budgets.municipal_budget_by_name()
-    pref_budgets = budgets.prefecture_budget_by_name()
+    muni_populations = population.municipal_population_by_name()
+    pref_populations = population.prefecture_population_by_name()
     muni_endorsements_by_year = jichisoken.municipal_head_endorsements_by_year()
     gov_endorsements_by_year = jichisoken.governor_endorsements_by_year()
     muni_endorsements = jichisoken.merge_latest(muni_endorsements_by_year)
@@ -362,7 +373,7 @@ def turnover_events(days: int | None = 30) -> list[TurnoverEvent]:
         endorsement = muni_endorsements.get(name)
         endorsing = endorsement.endorsing_parties if endorsement else []
         event = _turnover_event(
-            jid, name, muni_budgets.get(name), endorsing, predecessor_cache, national_parties,
+            jid, name, muni_populations.get(name), endorsing, predecessor_cache, national_parties,
             predecessor_endorsements_by_year=muni_endorsements_by_year,
         )
         if event is not None:
@@ -379,7 +390,7 @@ def turnover_events(days: int | None = 30) -> list[TurnoverEvent]:
         endorsement = gov_endorsements.get(pref)
         endorsing = endorsement.endorsing_parties if endorsement else []
         event = _turnover_event(
-            jid, pref, pref_budgets.get(pref), endorsing, predecessor_cache, national_parties,
+            jid, pref, pref_populations.get(pref), endorsing, predecessor_cache, national_parties,
             predecessor_endorsements_by_year=gov_endorsements_by_year,
         )
         if event is not None:
@@ -392,14 +403,24 @@ def turnover_index(days: int | None = 30) -> dict:
     """直近days日ぶんの首長選挙(知事・市区町村長)について $W_p^{\\text{turnover}}(T)$ と、
     奪われた側を見る補集指標 $L_p^{\\text{turnover}}(T)$、その差である符号付きの
     正味スコア(net_raw、$W_p - L_p$、全政党で合計すると常に0)を計算する。
-    days=Noneならas_ofが確認できる全首長を対象にする(§7.1参照)。
+    days=Noneならas_ofが確認できる全首長を対象にする。ただし各自治体につき
+    「現職とその直前の前任者」の1組しか比較しないため、実際に遡れる範囲は
+    任期4年ぶん程度に限られる(design_document.texの党派転換指数の節を参照)。
+
+    net_rawは対象イベント数・自治体規模に応じて絶対値が伸び縮みするため、
+    期間の異なるnet_raw同士(例: 先月と今月)をそのまま比較できない。net_share
+    は$\\sum_e\\sqrt{P_e}$(その期間の全イベントの重み)で割った、期間をまたいで
+    比較可能な版(2026-09にユーザー指摘で追加、$C_p(T)$と同じ分母を使うがゼロサム
+    なので合計は0のまま、100%には正規化されない)。
     """
     events = turnover_events(days)
 
     combined: dict[str, float] = {}
     loss: dict[str, float] = {}
     net: dict[str, float] = {}
+    total_weight = 0.0
     for event in events:
+        total_weight += _event_weight(event)
         for party, score in _score_event(event).items():
             combined[party] = combined.get(party, 0) + score
         for party, score in _loss_score_event(event).items():
@@ -411,6 +432,7 @@ def turnover_index(days: int | None = 30) -> dict:
     share = {p: v / total for p, v in combined.items()} if total else {}
     loss_total = sum(loss.values())
     loss_share = {p: v / loss_total for p, v in loss.items()} if loss_total else {}
+    net_share = {p: v / total_weight for p, v in net.items()} if total_weight else {}
 
     return {
         "period_days": days,
@@ -420,7 +442,140 @@ def turnover_index(days: int | None = 30) -> dict:
         "loss_raw": loss,
         "loss_share": loss_share,
         "net_raw": net,
+        "net_share": net_share,
     }
+
+
+@dataclass
+class TurnoverMonthSnapshot:
+    year: int
+    month: int
+    W_p: dict[str, float]
+    L_p: dict[str, float]
+    net_share: dict[str, float]
+    n_events: int
+
+
+def build_turnover_month_snapshots(min_year: int = 2018, window_months: int = 12) -> list[TurnoverMonthSnapshot]:
+    """在任履歴チェーン全体を使い、min_yearまで遡って月次の$W_p^{\\text{turnover}}(T)$・
+    $L_p^{\\text{turnover}}(T)$を再構成する。turnover_index()(現職とその直前の
+    前任者のみ)と異なり、各自治体の在任履歴チェーンにある\\textbf{隣接する任期の組すべて}
+    を転換イベントとして扱うため、2018年まで遡れる(design_document.texの
+    党派転換指数の節を参照)。政党要件を満たす政党の集合は、monthly_index.pyと同じく
+    直近の国政選挙時点の判定を全期間に固定で適用する。
+    """
+    from .fetch import diet
+    from .index import national_parties_meeting_requirement
+    from .monthly_index import (
+        _latest_sangiin_district_pct,
+        _latest_shugiin_district_pct,
+        _month_range,
+        _months_back,
+        _ym,
+    )
+
+    national_parties = national_parties_meeting_requirement(
+        diet.fetch_diet_seats(),
+        shugiin_district_pct=_latest_shugiin_district_pct(),
+        sangiin_district_pct=_latest_sangiin_district_pct(),
+    )
+
+    _ensure_governor_ids_loaded()
+    gov_id_to_name = {jid: name for name, jid in _GOVERNOR_JICHITAI_IDS.items()}
+    chains = load_term_chain_cache()["chains"]
+
+    pref_pop = population.prefecture_population_by_name()
+    muni_pop = population.municipal_population_by_name()
+    gov_by_year = jichisoken.governor_endorsements_by_year()
+    muni_by_year = jichisoken.municipal_head_endorsements_by_year()
+
+    # 月ごとの生イベント(winner_shares, predecessor_shares, weight)。
+    entries_by_month: dict[tuple[int, int], list[tuple[dict[str, float], dict[str, float], float]]] = {}
+
+    for jid_str, chain in chains.items():
+        jid = int(jid_str)
+        if jid in gov_id_to_name:
+            name, size, by_year = gov_id_to_name[jid], pref_pop.get(gov_id_to_name[jid]), gov_by_year
+        else:
+            juris_name = municipal_registry.jurisdiction_name(jid)
+            name = juris_name
+            size, by_year = (muni_pop.get(juris_name), muni_by_year) if juris_name else (None, None)
+        if not name or size is None:
+            continue
+        weight = math.sqrt(size)
+
+        for i in range(len(chain) - 1):
+            later, earlier = chain[i], chain[i + 1]
+            ym = _ym(later.get("vote_date"))
+            if ym is None or ym < (min_year, 1):
+                continue
+            later_endorsement = jichisoken.endorsement_for_vote_year(by_year, name, later["vote_date"])
+            later_endorsing = later_endorsement.endorsing_parties if later_endorsement else []
+            earlier_endorsement = jichisoken.endorsement_for_vote_year(by_year, name, earlier["vote_date"])
+            earlier_endorsing = earlier_endorsement.endorsing_parties if earlier_endorsement else []
+            winner_shares = _effective_party_shares(later["party"], later_endorsing, national_parties)
+            predecessor_shares = _effective_party_shares(earlier["party"], earlier_endorsing, national_parties)
+            entries_by_month.setdefault(ym, []).append((winner_shares, predecessor_shares, weight))
+
+    today = date.today()
+    months = _month_range((min_year, 1), (today.year, today.month))
+
+    results: list[TurnoverMonthSnapshot] = []
+    for ym in months:
+        window_entries: list[tuple[dict[str, float], dict[str, float], float]] = []
+        for w in _months_back(ym, window_months):
+            window_entries.extend(entries_by_month.get(w, []))
+        if not window_entries:
+            continue
+
+        gain: dict[str, float] = {}
+        loss: dict[str, float] = {}
+        net: dict[str, float] = {}
+        total_weight = 0.0
+        for winner_shares, predecessor_shares, weight in window_entries:
+            total_weight += weight
+            parties = set(winner_shares) | set(predecessor_shares)
+            for party in parties:
+                diff = winner_shares.get(party, 0.0) - predecessor_shares.get(party, 0.0)
+                if diff > 0:
+                    gain[party] = gain.get(party, 0.0) + weight * diff
+                elif diff < 0:
+                    loss[party] = loss.get(party, 0.0) - weight * diff
+                if diff != 0:
+                    net[party] = net.get(party, 0.0) + weight * diff
+
+        gain_total = sum(gain.values())
+        loss_total = sum(loss.values())
+        W_p = {p: v / gain_total for p, v in gain.items()} if gain_total else {}
+        L_p = {p: v / loss_total for p, v in loss.items()} if loss_total else {}
+        # net_shareはC_p(T)と同じ分母(sum sqrt(P))で割った期間比較可能な版
+        # (turnover_indexのnet_shareと同じ理由、2026-09にユーザー指摘)。
+        net_share = {p: v / total_weight for p, v in net.items()} if total_weight else {}
+        results.append(
+            TurnoverMonthSnapshot(
+                year=ym[0], month=ym[1], W_p=W_p, L_p=L_p, net_share=net_share, n_events=len(window_entries)
+            )
+        )
+
+    return results
+
+
+def latest_turnover_snapshot(
+    window_months: int = 12,
+) -> tuple[TurnoverMonthSnapshot, TurnoverMonthSnapshot | None]:
+    """月次記事での実際の使い方に対応する取得口。党派転換指数は「その時点の断面」を
+    見るための指標で、月をまたいだトレンドとして素朴に線を追う設計にはなっていない
+    (12か月の後方ウィンドウを使うため、隣接する月は11か月ぶん重なっており、
+    $C_p(T)$と同じ「ウィンドウの機械的な重なり」の問題がそのまま当てはまる、
+    2026-09にユーザー指摘)。そこで、直近window_monthsか月累積の断面を1点だけ、
+    前月分の断面と合わせて返す(2番目の戻り値、比較対象が無ければNone)。
+    """
+    snaps = build_turnover_month_snapshots(window_months=window_months)
+    if not snaps:
+        raise ValueError("転換イベントが1件も見つかりませんでした")
+    latest = snaps[-1]
+    prev = snaps[-2] if len(snaps) >= 2 else None
+    return latest, prev
 
 
 _GOVERNOR_JICHITAI_IDS: dict[str, int] | None = None

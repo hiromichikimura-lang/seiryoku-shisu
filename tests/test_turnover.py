@@ -1,4 +1,5 @@
-from seiryoku import turnover
+from seiryoku import monthly_index, municipal_registry, turnover
+from seiryoku.fetch import diet, jichisoken, population
 from seiryoku.fetch.go2senkyo import Candidate, ElectionHistoryRow
 from seiryoku.fetch.jichisoken import Endorsement
 from seiryoku.turnover import (
@@ -30,7 +31,7 @@ def test_score_event_hold_scores_nothing():
         vote_date="2025-04-06",
         winner_shares={"自由民主党": 1.0},
         predecessor_shares={"自由民主党": 1.0},
-        budget=1000,
+        population=1000,
     )
     assert _score_event(event) == {}
     assert _loss_score_event(event) == {}
@@ -42,7 +43,7 @@ def test_score_event_flip_scores_winner_only():
         vote_date="2025-04-06",
         winner_shares={"参政党": 1.0},
         predecessor_shares={"自由民主党": 1.0},
-        budget=1000,
+        population=1000,
     )
     scores = _score_event(event)
     assert set(scores) == {"参政党"}
@@ -58,17 +59,17 @@ def test_score_event_coalition_winner_splits_credit():
         vote_date="2025-04-06",
         winner_shares={"公明党": 0.5, "国民民主党": 0.5},
         predecessor_shares={"自由民主党": 1.0},
-        budget=1000,
+        population=1000,
     )
     scores = _score_event(event)
     assert set(scores) == {"公明党", "国民民主党"}
     assert scores["公明党"] == scores["国民民主党"]
 
 
-def test_score_event_zero_or_negative_budget_scores_nothing():
+def test_score_event_zero_or_negative_population_scores_nothing():
     event = TurnoverEvent(
         name="A市", vote_date="2025-04-06", winner_shares={"参政党": 1.0},
-        predecessor_shares={"自由民主党": 1.0}, budget=0,
+        predecessor_shares={"自由民主党": 1.0}, population=0,
     )
     assert _score_event(event) == {}
 
@@ -82,7 +83,7 @@ def test_score_event_no_actual_change_when_both_sides_share_endorser():
         vote_date="2025-04-06",
         winner_shares={"公明党": 1.0},
         predecessor_shares={"公明党": 1.0},
-        budget=1000,
+        population=1000,
     )
     assert _score_event(event) == {}
     assert _loss_score_event(event) == {}
@@ -94,7 +95,7 @@ def test_net_score_event_equals_gain_minus_loss():
         vote_date="2025-04-06",
         winner_shares={"公明党": 0.5, "国民民主党": 0.5},
         predecessor_shares={"自由民主党": 1.0},
-        budget=1000,
+        population=1000,
     )
     gain = _score_event(event)
     loss = _loss_score_event(event)
@@ -109,7 +110,7 @@ def test_net_score_event_sums_to_zero():
         vote_date="2025-04-06",
         winner_shares={"参政党": 1.0},
         predecessor_shares={"自由民主党": 1.0},
-        budget=1000,
+        population=1000,
     )
     assert abs(sum(_net_score_event(event).values())) < 1e-9
 
@@ -120,7 +121,7 @@ def test_net_score_event_zero_when_no_actual_change():
         vote_date="2025-04-06",
         winner_shares={"公明党": 1.0},
         predecessor_shares={"公明党": 1.0},
-        budget=1000,
+        population=1000,
     )
     assert _net_score_event(event) == {}
 
@@ -339,3 +340,85 @@ def test_build_term_chain_stops_at_end_of_history_before_min_year(monkeypatch):
     chain = _build_term_chain(1, min_year=2000)
 
     assert chain == [{"vote_date": "2021-04-11", "party": "自由民主党"}]
+
+
+def test_build_turnover_month_snapshots_reconstructs_every_transition_in_chain(monkeypatch):
+    """turnover_events()(現職と直前の前任者のみ)と異なり、在任履歴チェーンにある
+    隣接する任期の組すべてを転換イベントとして拾えることを確認する回帰テスト。
+    """
+    monkeypatch.setattr(diet, "fetch_diet_seats", lambda: {"衆議院": {"自由民主党": 5}})
+    monkeypatch.setattr(monthly_index, "_latest_shugiin_district_pct", lambda: {})
+    monkeypatch.setattr(monthly_index, "_latest_sangiin_district_pct", lambda: {})
+
+    monkeypatch.setattr(turnover, "_ensure_governor_ids_loaded", lambda: None)
+    monkeypatch.setattr(turnover, "_GOVERNOR_JICHITAI_IDS", {})
+    monkeypatch.setattr(
+        turnover,
+        "load_term_chain_cache",
+        lambda: {
+            "chains": {
+                "1": [
+                    {"vote_date": "2025-04-09", "party": "自由民主党"},
+                    {"vote_date": "2021-04-11", "party": "無所属"},
+                    {"vote_date": "2018-04-08", "party": "自由民主党"},
+                ]
+            }
+        },
+    )
+    monkeypatch.setattr(municipal_registry, "jurisdiction_name", lambda jid: "A市" if jid == 1 else None)
+    monkeypatch.setattr(population, "prefecture_population_by_name", lambda: {})
+    monkeypatch.setattr(population, "municipal_population_by_name", lambda: {"A市": 10000})
+    monkeypatch.setattr(jichisoken, "governor_endorsements_by_year", lambda: {})
+    monkeypatch.setattr(jichisoken, "municipal_head_endorsements_by_year", lambda: {})
+    monkeypatch.setattr(
+        jichisoken, "endorsement_for_vote_year", lambda by_year, name, vote_date: None
+    )
+
+    snaps = turnover.build_turnover_month_snapshots(min_year=2018, window_months=1)
+    by_month = {(s.year, s.month): s for s in snaps}
+
+    # 2025年4月: 自民が無所属から奪取
+    assert (2025, 4) in by_month
+    assert by_month[(2025, 4)].W_p == {"自由民主党": 1.0}
+    assert by_month[(2025, 4)].L_p == {"無所属": 1.0}
+
+    # 2021年4月: 無所属が自民から奪取(現職と直前の前任者だけを見るturnover_events()
+    # では2021年時点の入れ替わりは既に上書きされ見えなくなっている)
+    assert (2021, 4) in by_month
+    assert by_month[(2021, 4)].W_p == {"無所属": 1.0}
+    assert by_month[(2021, 4)].L_p == {"自由民主党": 1.0}
+
+
+def test_latest_turnover_snapshot_returns_latest_and_previous(monkeypatch):
+    monkeypatch.setattr(diet, "fetch_diet_seats", lambda: {"衆議院": {"自由民主党": 5}})
+    monkeypatch.setattr(monthly_index, "_latest_shugiin_district_pct", lambda: {})
+    monkeypatch.setattr(monthly_index, "_latest_sangiin_district_pct", lambda: {})
+    monkeypatch.setattr(turnover, "_ensure_governor_ids_loaded", lambda: None)
+    monkeypatch.setattr(turnover, "_GOVERNOR_JICHITAI_IDS", {})
+    monkeypatch.setattr(
+        turnover,
+        "load_term_chain_cache",
+        lambda: {
+            "chains": {
+                "1": [
+                    {"vote_date": "2025-04-09", "party": "自由民主党"},
+                    {"vote_date": "2021-04-11", "party": "無所属"},
+                    {"vote_date": "2018-04-08", "party": "自由民主党"},
+                ]
+            }
+        },
+    )
+    monkeypatch.setattr(municipal_registry, "jurisdiction_name", lambda jid: "A市" if jid == 1 else None)
+    monkeypatch.setattr(population, "prefecture_population_by_name", lambda: {})
+    monkeypatch.setattr(population, "municipal_population_by_name", lambda: {"A市": 10000})
+    monkeypatch.setattr(jichisoken, "governor_endorsements_by_year", lambda: {})
+    monkeypatch.setattr(jichisoken, "municipal_head_endorsements_by_year", lambda: {})
+    monkeypatch.setattr(
+        jichisoken, "endorsement_for_vote_year", lambda by_year, name, vote_date: None
+    )
+
+    latest, prev = turnover.latest_turnover_snapshot(window_months=1)
+    assert (latest.year, latest.month) == (2025, 4)
+    assert prev is not None
+    assert (prev.year, prev.month) == (2021, 4)
+    assert isinstance(latest.net_share, dict)

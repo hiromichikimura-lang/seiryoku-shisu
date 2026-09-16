@@ -1,0 +1,34 @@
+[
+  {
+    "date": "2026-09-01",
+    "gov_covered": 47,
+    "gov_total": 47,
+    "muni_head_covered": 27,
+    "muni_gikai_covered": 22,
+    "muni_total": 1788
+  },
+  {
+    "date": "2026-09-04",
+    "gov_covered": 47,
+    "gov_total": 47,
+    "muni_head_covered": 1738,
+    "muni_gikai_covered": 1715,
+    "muni_total": 1788
+  },
+  {
+    "date": "2026-09-15",
+    "gov_covered": 47,
+    "gov_total": 47,
+    "muni_head_covered": 1738,
+    "muni_gikai_covered": 1715,
+    "muni_total": 1788
+  },
+  {
+    "date": "2026-09-16",
+    "gov_covered": 47,
+    "gov_total": 47,
+    "muni_head_covered": 1738,
+    "muni_gikai_covered": 1715,
+    "muni_total": 1788
+  }
+]

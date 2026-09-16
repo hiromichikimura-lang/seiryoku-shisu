@@ -1,8 +1,8 @@
-"""政党インパクト指数$C_p(t)$を月次のフロー指標として再構成する。
+"""党勢推移指数$C_p(t)$を月次のフロー指標として再構成する。
 
 2026-09にユーザー指示で、ストック指標(現時点で誰が何を保有しているかを
 全自治体+国会について毎月積み上げる方式)からフロー指標(その月に実際に
-選挙があった自治体・国会だけを対象にする方式)へ設計を変更した。
+選挙があった自治体・議会・国会だけを対象にする方式)へ設計を変更した。
 
 理由: ストック方式では自治体の重み$\\sqrt{P_j}$が人口という定数だけで決まるため、
 選挙結果が変わってもどの枠が動くかが変わるだけで、国会と地方全体の相対的な
@@ -12,24 +12,55 @@
 $\\sqrt{P_j}$で加重する方式にした——ある月にどれだけの人口を代表する選挙が
 動いたか、その勝者の政党構成で$C_p(t)$を決める。
 
-$$C_p(T) = \\frac{\\displaystyle\\sum_{e:\\, 投票日(e)\\in T} \\sqrt{P_{e}}\\cdot\\mathbb{1}[党(e)=p]}
-                  {\\displaystyle\\sum_{e:\\, 投票日(e)\\in T} \\sqrt{P_{e}}}$$
+$$C_p(T) = \\frac{\\displaystyle\\sum_{e:\\, 投票日(e)\\in T} \\sqrt{n_eP_{e}}\\cdot\\mathbb{1}[党(e)=p]}
+                  {\\displaystyle\\sum_{e:\\, 投票日(e)\\in T} \\sqrt{n_eP_{e}}}$$
 
 ここで$e$はその月($T$)に投票日があった選挙イベント(知事選・市区町村長選・
-衆院選・参院選)、$P_e$はその選挙が代表する人口(自治体の場合はその自治体の
-人口、国会の場合は全国人口)。選挙が無かった月は$C_p(T)$自体が定義できない
+都道府県議会選・市区町村議会選・衆院選・参院選)、$P_e$はその選挙が代表する
+人口(自治体の場合はその自治体の人口、国会の場合は全国人口)、$n_e$はその
+選挙で決まる議席・ポストの数(知事・市区町村長選は常に1、議会選挙・衆院選・
+参院選は実際の議席数)。選挙が無かった月は$C_p(T)$自体が定義できない
 (欠測とする)。
+
+首長選挙は常に$n_e=1$なので$\\sqrt{n_eP_e}=\\sqrt{P_e}$のままだが、国会の
+選挙だけは実際の議席数(衆院選なら465、参院選の半数改選なら実際の改選数)を
+掛ける(2026-09にユーザー指示で$\\sqrt{P_e}$のみの旧式から変更、design_document.tex
+\\S2.2参照)。これを「1機関=1票」と数えるか「議員1人ずつが有権者を代表する」と
+数えるかで重みが大きく変わるため、後者の解釈を採用した。衆院選と参院選は
+別々の選挙イベントであり、$e$としても月としても常に別々に扱う——衆参の
+議席数を合算してから1回だけ$\\sqrt{n_{国}P_{国}}$を掛けるようなことはしない
+(2026-09にユーザー指摘、index.pyの\\texttt{compute_combined_index}にあった
+同種の合算を分離した際の議論と同じ)。
 
 首長側は既存のexecutive_term_chains(turnover.build_term_chain_cache())の
 チェーン全体を舐め、投票日がその月に一致するエントリだけを拾う。国会側は
-衆参それぞれの選挙日単位のスナップショットから同様に拾う(衆院選は解散総選挙、
-参院選は3年ごとの半数改選)。参院側はdiet_history.fetch_sangiin_history()が
-常会・臨時会・特別会など召集のたびのスナップショットを返す(選挙の無い会期も
-含む)ため、そのまま使うと欠員補充等による微小な構成変化まで選挙イベントとして
-誤カウントする。半数改選は3年周期で固定なので、周期に合致する年の最初の
-8月以降のスナップショットだけを拾う(_real_sangiin_election_snapshots、
-2026-09に発見・修正——2018〜2026年の期間だけで222件中25件が誤って
-選挙イベント扱いされていた)。
+衆参それぞれの選挙結果ファイルから同様に拾う(衆院選は解散総選挙、参院選は
+3年ごとの半数改選)。
+
+議会側(都道府県議会・市区町村議会)はmunicipal_registry.load_gikai_term_chain_cache()
+のチェーンを同様に舐める。首長と異なり、無所属候補の推薦・支持政党を記録した
+情報源(jichisoken)が個人単位では存在しないため、jichisoken補正は試みず、
+届出政党そのままの議席占有率($\\phi_p(e)$、index._phi)を国会の選挙と同じ
+やり方で計算する。以前はこの「補正手段が無い」ことを理由に議会全体を$C_p(T)$の
+対象から外していたが、2026年9月に公開グラフを政党間の水準比較から「各政党
+自身の推移」の表示に切り替えたことで、この制約は障害でなくなった——ラベリングの
+非対称性(自民党系候補は無所属で出馬しがちで共産党はほぼ必ず党名を明示する)は
+政党間の水準比較を歪めるが、政党間で比較しないなら歪みは実害にならない
+(design_document.tex \\S2.1参照)。
+
+参院側は当初diet_history.fetch_sangiin_history()(参議院の「会派別所属議員数の
+変遷」、選挙直後の参議院\\textbf{全体}のスナップショット)を使い、常会・臨時会・
+特別会など召集ごとの構成変化を選挙イベントと誤カウントしないよう、半数改選の
+周期に合致する年の8月以降だけを拾うフィルタ(旧_real_sangiin_election_snapshots)
+を実装していた(2026-09に発見・修正——2018〜2026年の期間だけで222件中25件が
+誤って選挙イベント扱いされていた)。しかしこのフィルタを施しても、抽出される
+スナップショットは「その選挙で改選された議席」ではなく「改選されなかった残り
+半分も含む参議院全体」の構成であり、$n_e$・$\\phi_p(e)$の定義(その選挙イベントで
+決まったこと)と食い違うことが後に判明した(2026-09に発見、design_document.tex
+\\S2.2参照)。そこで総務省が参院選ごとに公表する「党派別男女別新前元別当選人数」
+ファイルから、その回に実際に改選された議席の当選者数だけを取得する
+diet_history.fetch_sangiin_election_history()に切り替えた。このファイルは
+選挙のあった回にしか存在しないため、上記のフィルタ自体が不要になった。
 
 個別に追跡する政党の集合は、政党助成法上の「政党要件」(5議席以上、または
 1議席以上かつ直近国政選挙で得票率2%以上、index.national_parties_meeting_requirement
@@ -45,7 +76,6 @@ from dataclasses import dataclass
 from datetime import date
 
 from .fetch import diet_history, population
-from .historical_index import _sangiin_date_key
 from .index import (
     _effective_party_shares,
     _latest_sangiin_district_pct,
@@ -65,46 +95,6 @@ def _ym(date_str: str | None) -> tuple[int, int] | None:
         return None
     m = _YM_RE.match(date_str)
     return (int(m.group(1)), int(m.group(2))) if m else None
-
-
-def _sangiin_ym(date_label: str) -> tuple[int, int] | None:
-    key = _sangiin_date_key(date_label)
-    return (key[0], key[1]) if key else None
-
-
-_SANGIIN_CYCLE_BASE_YEAR = 1947  # vote_share.sangiin_ordinal_for_yearと同じ3年周期の起点
-
-
-def _is_sangiin_election_year(year: int) -> bool:
-    return (year - _SANGIIN_CYCLE_BASE_YEAR) % 3 == 0
-
-
-def _real_sangiin_election_snapshots(
-    snapshots: list,
-) -> list[tuple[tuple[int, int], dict[str, int]]]:
-    """参議院の本来の選挙(半数改選)直後のスナップショットだけを抽出する。
-
-    diet_history.fetch_sangiin_history()は常会・臨時会・特別会など国会の
-    召集ごとの構成スナップショットを全て返す(年に2〜3回)。これはI_p(t)の
-    ような「ある時点の構成」を求めるストック用途には正しいデータだが、
-    フロー方式で「その月に選挙があったか」を判定する用途にそのまま使うと、
-    選挙が無かった会期(欠員補充・会派異動による微小な構成変化)まで
-    国会全体(sqrt(全国人口)という非常に大きな重み)を持つ「選挙イベント」
-    として誤カウントしてしまう(2026-09に発見)。参議院の半数改選は解散が
-    無く3年周期で固定、かつ必ず7月に投票されるため、周期に合致する年の
-    最初の8月以降のスナップショット(投票直後に召集される会期)だけを
-    選挙イベントとして拾う。
-    """
-    parsed = [(_sangiin_ym(s.date), s.seats) for s in snapshots]
-    parsed = [(k, v) for k, v in parsed if k is not None]
-    by_year: dict[int, tuple[tuple[int, int], dict[str, int]]] = {}
-    for ym, seats in parsed:
-        year, month = ym
-        if not _is_sangiin_election_year(year) or month < 8:
-            continue
-        if year not in by_year or ym < by_year[year][0]:
-            by_year[year] = (ym, seats)
-    return list(by_year.values())
 
 
 def _month_range(start: tuple[int, int], end: tuple[int, int]) -> list[tuple[int, int]]:
@@ -169,7 +159,7 @@ def build_month_snapshots(min_year: int = MIN_YEAR, window_months: int = 12) -> 
     from . import municipal_registry, turnover
     from .fetch import jichisoken
 
-    sangiin_entries = _real_sangiin_election_snapshots(diet_history.fetch_sangiin_history())
+    sangiin_entries = [(_ym(s.date), s.seats) for s in diet_history.fetch_sangiin_election_history()]
     shugiin_entries = [(_ym(s.date), s.seats) for s in diet_history.fetch_shugiin_history()]
     national_pop = population.national_population()
     national_parties = _current_national_parties()
@@ -195,6 +185,23 @@ def build_month_snapshots(min_year: int = MIN_YEAR, window_months: int = 12) -> 
         if name and size is not None:
             local_entries.append((name, parsed, size, by_year))
 
+    # 都道府県議会・市区町村議会(gikai)は、首長と違い候補者個人の推薦・支持政党を
+    # 記録した情報源が無いため、jichisoken補正は試みず届出政党のみで$\\phi_p(e)$を
+    # 計算する——国会の選挙と同じ扱い(2026年9月にユーザー指摘、design_document.tex
+    # \\S2.1参照。以前はこの「補正手段が無い」ことを理由に議会全体を対象外にしていたが、
+    # 政党間の水準比較をしない設計に転換したことで、この制約は障害でなくなった)。
+    gikai_local_entries = []
+    for jid_str, chain in municipal_registry.load_gikai_term_chain_cache()["chains"].items():
+        jid = int(jid_str)
+        parsed = _parsed_chain(chain)
+        if jid in gov_id_to_name:
+            size = pref_pop.get(gov_id_to_name[jid])
+        else:
+            name = municipal_registry.jurisdiction_name(jid)
+            size = muni_pop.get(name) if name else None
+        if size is not None:
+            gikai_local_entries.append((parsed, size))
+
     today = date.today()
     months = _month_range((min_year, 1), (today.year, today.month))
 
@@ -211,12 +218,22 @@ def build_month_snapshots(min_year: int = MIN_YEAR, window_months: int = 12) -> 
                 shares = _effective_party_shares(term["party"], endorsing, national_parties)
                 entries.append((shares, math.sqrt(size)))
 
+        for parsed, size in gikai_local_entries:
+            for term in _terms_in_month(parsed, ym):
+                seats = term["seats"]
+                n_e = sum(seats.values())
+                if n_e == 0:
+                    continue
+                entries.append((_phi(seats, national_parties), math.sqrt(n_e * size)))
+
         for date_key, seats in sangiin_entries:
             if date_key == ym:
-                entries.append((_phi(seats, national_parties), math.sqrt(national_pop)))
+                n_e = sum(seats.values())
+                entries.append((_phi(seats, national_parties), math.sqrt(n_e * national_pop)))
         for date_key, seats in shugiin_entries:
             if date_key == ym:
-                entries.append((_phi(seats, national_parties), math.sqrt(national_pop)))
+                n_e = sum(seats.values())
+                entries.append((_phi(seats, national_parties), math.sqrt(n_e * national_pop)))
 
         entries_by_month[ym] = entries
 

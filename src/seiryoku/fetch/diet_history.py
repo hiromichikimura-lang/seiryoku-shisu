@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
+from urllib.parse import urljoin
 
 from bs4 import BeautifulSoup
 
@@ -28,6 +29,14 @@ _SHUGIIN_NON_PARTY_CELLS = {
     "",
     "男", "女", "計", "新", "前", "元", "区分",
     "小計", "合計", "政党等所属",  # 政党ではなく複数政党の再集計列
+}
+
+SANGIIN_ICHIRAN_URL = "https://www.soumu.go.jp/senkyo/senkyo_s/data/sangiin/ichiran.html"
+_SANGIIN_RESULT_LINK_TEXT = "党派別男女別新前元別当選人数"
+_SANGIIN_NON_PARTY_CELLS = {
+    "",
+    "男", "女", "計", "新", "現", "元", "区分",
+    "小計", "合計",
 }
 
 
@@ -80,8 +89,7 @@ def _shugiin_result_file_url(index_url: str) -> str | None:
     soup = BeautifulSoup(html, "html.parser")
     for a in soup.find_all("a", href=True):
         if _SHUGIIN_RESULT_LINK_TEXT in a.get_text(strip=True):
-            href = a["href"]
-            return href if href.startswith("http") else "https://www.soumu.go.jp" + href
+            return urljoin(index_url, a["href"])
     return None
 
 
@@ -170,6 +178,144 @@ def fetch_shugiin_history(min_election: int = 45) -> list[Snapshot]:
         for rows in _sheets_as_rows(file_url).values():
             try:
                 sheet_seats = _parse_shugiin_result_sheet(rows)
+            except ValueError:
+                continue
+            for party, n in sheet_seats.items():
+                seats[party] = seats.get(party, 0) + n
+        if seats:
+            snapshots.append(Snapshot(session=f"第{number}回", date=date, seats=seats))
+    return snapshots
+
+
+def _discover_sangiin_elections() -> list[tuple[int, str]]:
+    """(選挙回次, 選挙結果ページURL) を返す(総務省の一覧ページから機械的に発見)。"""
+    html = fetch(SANGIIN_ICHIRAN_URL).decode("shift_jis", errors="ignore")
+    soup = BeautifulSoup(html, "html.parser")
+    elections: list[tuple[int, str]] = []
+    for a in soup.find_all("a", href=True):
+        m = re.match(r"第(\d+)回参議院議員通常選挙結果", a.get_text(strip=True))
+        href = a["href"]
+        if m and re.search(r"/sangiin\d+/index\.html$", href):
+            elections.append((int(m.group(1)), "https://www.soumu.go.jp" + href))
+    return sorted(elections)
+
+
+def _sangiin_result_file_url(index_url: str) -> str | None:
+    """結果ファイルへのリンクを絶対URLで返す。
+
+    古い回(例: 第21回)はルート相対でなくディレクトリ相対のhref(例: "xls/....xls")
+    を使うため、単純な"https://www.soumu.go.jp"+hrefの連結では壊れる
+    (2026-09に発見)。urljoinでindex_url自身を基準に解決する。
+    """
+    html = fetch(index_url).decode("shift_jis", errors="ignore")
+    soup = BeautifulSoup(html, "html.parser")
+    for a in soup.find_all("a", href=True):
+        if _SANGIIN_RESULT_LINK_TEXT in a.get_text(strip=True):
+            return urljoin(index_url, a["href"])
+    return None
+
+
+def _sangiin_election_date(index_url: str) -> str:
+    """選挙結果ページの<title>から投票日をISO日付で返す(_shugiin_election_dateと同じ)。"""
+    html = fetch(index_url).decode("shift_jis", errors="ignore")
+    m = re.search(r"<title>(.*?)</title>", html, re.S)
+    if not m:
+        raise ValueError(f"titleタグが見つかりません: {index_url}")
+    return _label_to_iso_date(m.group(1))
+
+
+def _strip_by_election_suffix(value: object) -> int:
+    """「21(1)」のような値から、合併実施された補欠選挙ぶんの外書き「(1)」を除き、
+    通常選挙(半数改選)そのものの当選者数だけを返す。空文字は0。"""
+    if isinstance(value, (int, float)):
+        return int(value)
+    if not isinstance(value, str):
+        return 0
+    m = re.match(r"\d+", value)
+    return int(m.group()) if m else 0
+
+
+def _parse_sangiin_result_sheet(rows: list[tuple]) -> dict[str, int]:
+    """当選人数シート1枚から{政党: その回の改選当選者数}を返す。
+
+    総務省のこのシートは6政党ずつのブロックが横に並んでおり、各ブロックは
+    「選挙区・比例代表・合計」の3つの区分をそれぞれ「新・現・元・計」の行で持つ
+    (shugiinの届出政党等別ファイルとは異なるレイアウト)。区分名(「選挙区」
+    「比例代表」「合計」)は1セルにまとまっている年度と、1文字ずつ複数行に
+    分割されている年度があり(2026-09に発見、後者は各区分内の「新・現・元・計」
+    のどの行に何文字目が来るかも年度によってばらばら)、区分名のテキストでは
+    確実に判別できない。その代わり、集計順が常に「(比例代表・選挙区のいずれか
+    2区分)→合計(全体)」で、各区分の最後の行が「計」であることを利用し、
+    ブロック内で「計」とラベル付けされた行のうち\\textbf{最後}のもの
+    (=合計区分の計、選挙区+比例代表を合算した、その回の改選当選者数)を使う
+    (shugiin側のtotal_rows[-1]と同じ考え方)。
+    """
+
+    _NUMERIC_RE = re.compile(r"^\d+(\(\d+\))?$")
+
+    def _looks_like_party_name(c: object) -> bool:
+        n = _norm(c)
+        if not n or n in _SANGIIN_NON_PARTY_CELLS or len(n) > 12:
+            return False
+        # 当選者数の値(「23」「7(1)」等)が政党名の見出しと誤認されないように、
+        # 数字だけのセルは除外する(2026-09に発見、実際の値セルで再現)。
+        return not _NUMERIC_RE.match(n)
+
+    def _qualifying_cells(row: tuple) -> int:
+        return sum(1 for c in row[2::3] if isinstance(c, str) and _looks_like_party_name(c))
+
+    header_indices = [i for i, row in enumerate(rows) if row and _qualifying_cells(row) >= 1]
+    if not header_indices:
+        raise ValueError("政党名の見出し行が見つかりません")
+
+    seats: dict[str, int] = {}
+    for block_i, header_idx in enumerate(header_indices):
+        block_end = header_indices[block_i + 1] if block_i + 1 < len(header_indices) else len(rows)
+        header = rows[header_idx]
+        party_cols = [
+            (i, _norm(v)) for i, v in enumerate(header) if i >= 2 and isinstance(v, str) and _looks_like_party_name(v)
+        ]
+        total_rows = [
+            row
+            for row in rows[header_idx + 1 : block_end]
+            if row and len(row) > 1 and _norm(row[1]) == "計"
+        ]
+        if not total_rows:
+            continue
+        total_row = total_rows[-1]
+        for col, party in party_cols:
+            val_col = col + 2  # 男・女・計の3列組のうち「計」列
+            if val_col < len(total_row):
+                seats[party] = seats.get(party, 0) + _strip_by_election_suffix(total_row[val_col])
+    if not seats:
+        raise ValueError("「計」の行が見つかりません")
+    return seats
+
+
+def fetch_sangiin_election_history(min_election: int = 21) -> list[Snapshot]:
+    """参議院の半数改選ごとの党派別当選者数を返す(総務省の選挙結果ファイルより)。
+
+    sangiin.go.jpの「会派別所属議員数の変遷」(fetch_sangiin_history)は選挙直後の
+    参議院\\textbf{全体}(改選されなかった残り半分も含む)のスナップショットであり、
+    その回の選挙で実際に決まった議席数ではない(2026-09に発見)。$C_p(T)$の
+    「その選挙イベントで決まったこと」という定義に合わせるため、総務省が
+    選挙ごとに公表する当選者数ファイルから、その回の改選当選者数だけを取得する。
+    min_election=21(2007年)より前は結果ページの構成が異なる可能性があるため対象外。
+    """
+    from .local_history import _sheets_as_rows
+
+    snapshots: list[Snapshot] = []
+    for number, index_url in _discover_sangiin_elections():
+        if number < min_election:
+            continue
+        file_url = _sangiin_result_file_url(index_url)
+        if file_url is None:
+            continue
+        date = _sangiin_election_date(index_url)
+        seats: dict[str, int] = {}
+        for rows in _sheets_as_rows(file_url).values():
+            try:
+                sheet_seats = _parse_sangiin_result_sheet(rows)
             except ValueError:
                 continue
             for party, n in sheet_seats.items():
