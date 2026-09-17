@@ -1,3 +1,5 @@
+import json
+
 from seiryoku import municipal_registry as mr
 from seiryoku.fetch.go2senkyo import Candidate, ElectionHistoryRow
 
@@ -116,6 +118,7 @@ def test_all_completed_gikai_excludes_unheld_and_uncontested():
 def test_refresh_stale_gikai_term_chains_keeps_id_when_no_newer_election(monkeypatch, tmp_path):
     cache_path = tmp_path / "gikai_term_chains.json"
     monkeypatch.setattr(mr, "GIKAI_TERM_CHAIN_CACHE_PATH", cache_path)
+    monkeypatch.setattr(mr, "GIKAI_REFRESH_PROGRESS_PATH", tmp_path / "gikai_term_chain_refresh_progress.json")
     mr.save_gikai_term_chain_cache(
         {"chains": {"1": [{"vote_date": "2023-04-09", "seats": {"自由民主党": 1}}]}, "done_ids": [1], "errors": {}}
     )
@@ -134,9 +137,31 @@ def test_refresh_stale_gikai_term_chains_keeps_id_when_no_newer_election(monkeyp
     assert mr.load_gikai_term_chain_cache()["done_ids"] == [1]
 
 
+def test_refresh_stale_gikai_term_chains_resumes_from_existing_progress_file(monkeypatch, tmp_path):
+    cache_path = tmp_path / "gikai_term_chains.json"
+    monkeypatch.setattr(mr, "GIKAI_TERM_CHAIN_CACHE_PATH", cache_path)
+    progress_path = tmp_path / "gikai_term_chain_refresh_progress.json"
+    monkeypatch.setattr(mr, "GIKAI_REFRESH_PROGRESS_PATH", progress_path)
+    mr.save_gikai_term_chain_cache({"chains": {}, "done_ids": [1, 2], "errors": {}})
+
+    progress_path.write_text(json.dumps({"remaining": [2], "stale": [], "checked": 1}), encoding="utf-8")
+
+    def fake_history(jid, kind, force=False):
+        assert jid == 2, "進捗ファイルに残っていないIDを再確認してしまった"
+        return []
+
+    monkeypatch.setattr(mr.go2senkyo, "jurisdiction_history", fake_history)
+
+    stats = mr.refresh_stale_gikai_term_chains()
+
+    assert stats == {"checked": 2, "stale": []}
+    assert not progress_path.exists()
+
+
 def test_refresh_stale_gikai_term_chains_removes_id_when_newer_election_found(monkeypatch, tmp_path):
     cache_path = tmp_path / "gikai_term_chains.json"
     monkeypatch.setattr(mr, "GIKAI_TERM_CHAIN_CACHE_PATH", cache_path)
+    monkeypatch.setattr(mr, "GIKAI_REFRESH_PROGRESS_PATH", tmp_path / "gikai_term_chain_refresh_progress.json")
     mr.save_gikai_term_chain_cache(
         {"chains": {"1": [{"vote_date": "2019-04-07", "seats": {"自由民主党": 1}}]}, "done_ids": [1], "errors": {}}
     )
@@ -156,6 +181,7 @@ def test_refresh_stale_gikai_term_chains_removes_id_when_newer_election_found(mo
 def test_refresh_and_rebuild_gikai_term_chains_rebuilds_only_the_stale_id(monkeypatch, tmp_path):
     cache_path = tmp_path / "gikai_term_chains.json"
     monkeypatch.setattr(mr, "GIKAI_TERM_CHAIN_CACHE_PATH", cache_path)
+    monkeypatch.setattr(mr, "GIKAI_REFRESH_PROGRESS_PATH", tmp_path / "gikai_term_chain_refresh_progress.json")
     mr.save_gikai_term_chain_cache(
         {"chains": {"1": [{"vote_date": "2019-04-07", "seats": {"自由民主党": 1}}]}, "done_ids": [1], "errors": {}}
     )

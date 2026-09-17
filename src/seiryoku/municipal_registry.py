@@ -309,38 +309,67 @@ def build_gikai_term_chain_cache(
     return state
 
 
-def refresh_stale_gikai_term_chains(jichitai_ids: list[int] | None = None) -> dict:
+GIKAI_REFRESH_PROGRESS_PATH = Path(__file__).resolve().parents[2] / "data" / "gikai_term_chain_refresh_progress.json"
+
+
+def _load_gikai_refresh_progress(default_ids: list[int]) -> dict:
+    if GIKAI_REFRESH_PROGRESS_PATH.exists():
+        return json.loads(GIKAI_REFRESH_PROGRESS_PATH.read_text(encoding="utf-8"))
+    return {"remaining": list(default_ids), "stale": [], "checked": 0}
+
+
+def _save_gikai_refresh_progress(progress: dict) -> None:
+    GIKAI_REFRESH_PROGRESS_PATH.parent.mkdir(exist_ok=True)
+    GIKAI_REFRESH_PROGRESS_PATH.write_text(json.dumps(progress, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def refresh_stale_gikai_term_chains(jichitai_ids: list[int] | None = None, checkpoint_every: int = 20) -> dict:
     """turnover.refresh_stale_term_chains()の議会版。done_ids入りした自治体は
     build_gikai_term_chain_cache()が二度と再取得しないため、新しい議会選挙が
     実施されても永久に反映されない同じ不具合がある(2026-09発覚)。
 
     既にdone_idsに入っている自治体について、go2senkyoの最新ページを強制的に
     再取得し、キャッシュ済みチェーンの先頭より新しい完了済み選挙が無いか確認する。
-    見つかればdone_idsから外す。"""
-    state = load_gikai_term_chain_cache()
-    ids = jichitai_ids if jichitai_ids is not None else list(state["done_ids"])
+    見つかればdone_idsから外す。turnover.refresh_stale_term_chains()と同じ理由で
+    checkpoint_everyごとの進捗保存・再開可能な設計にする(数時間かかる見込みで、
+    このマシンはハイバネーション・ネットワーク切断が断続的に起こる前提のため)。"""
+    if not GIKAI_REFRESH_PROGRESS_PATH.exists():
+        ids = jichitai_ids if jichitai_ids is not None else list(load_gikai_term_chain_cache()["done_ids"])
+    else:
+        ids = None
+    progress = _load_gikai_refresh_progress(ids or [])
 
-    stale: list[int] = []
-    for jid in ids:
+    state = load_gikai_term_chain_cache()
+    total = progress["checked"] + len(progress["remaining"])
+
+    while progress["remaining"]:
+        jid = progress["remaining"].pop(0)
         try:
             history = go2senkyo.jurisdiction_history(jid, "gikai", force=True)
+            completed = _all_completed_gikai(history)
         except Exception:
-            continue
-        completed = _all_completed_gikai(history)
-        if not completed:
-            continue
-        newest_date = completed[0].vote_date.replace("/", "-")
-        cached_chain = state["chains"].get(str(jid), [])
-        cached_top = cached_chain[0]["vote_date"] if cached_chain else None
-        if newest_date != cached_top:
-            stale.append(jid)
+            completed = []
+        if completed:
+            newest_date = completed[0].vote_date.replace("/", "-")
+            cached_chain = state["chains"].get(str(jid), [])
+            cached_top = cached_chain[0]["vote_date"] if cached_chain else None
+            if newest_date != cached_top:
+                progress["stale"].append(jid)
+        progress["checked"] += 1
+        if progress["checked"] % checkpoint_every == 0:
+            _save_gikai_refresh_progress(progress)
+            print(f"gikai refresh checkpoint: {progress['checked']}/{total} checked", flush=True)
 
+    stale = progress["stale"]
     if stale:
         stale_set = set(stale)
         state["done_ids"] = [jid for jid in state["done_ids"] if jid not in stale_set]
         save_gikai_term_chain_cache(state)
 
-    return {"checked": len(ids), "stale": stale}
+    if GIKAI_REFRESH_PROGRESS_PATH.exists():
+        GIKAI_REFRESH_PROGRESS_PATH.unlink()
+
+    return {"checked": progress["checked"], "stale": stale}
 
 
 def refresh_and_rebuild_gikai_term_chains(jichitai_ids: list[int] | None = None) -> dict:

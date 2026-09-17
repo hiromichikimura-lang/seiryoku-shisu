@@ -1,6 +1,6 @@
 from types import SimpleNamespace
 
-from seiryoku import draft, forecast, national_elections, precursor
+from seiryoku import draft, forecast, municipal_registry, national_elections, precursor, turnover
 
 
 def _history():
@@ -19,6 +19,7 @@ def test_build_month_facts_defaults_to_latest_single_month_when_no_last_report(m
     monkeypatch.setattr(forecast, "load_forecast_history", lambda: {})
     monkeypatch.setattr(precursor, "load_precursor_table", lambda: [])
     monkeypatch.setattr(draft, "load_last_report", lambda: None)
+    monkeypatch.setattr(draft, "_cache_refresh_incomplete", lambda: False)
 
     facts = draft.build_month_facts(_history(), election_months=[(2022, 7)])
 
@@ -34,6 +35,7 @@ def test_build_month_facts_covers_multiple_months_since_last_report(monkeypatch)
     monkeypatch.setattr(national_elections, "compute_election_events", lambda: [((2022, 7), "衆院選")])
     monkeypatch.setattr(forecast, "load_forecast_history", lambda: {})
     monkeypatch.setattr(precursor, "load_precursor_table", lambda: [])
+    monkeypatch.setattr(draft, "_cache_refresh_incomplete", lambda: False)
 
     # 前回更新が2022年5月時点だったので、6月・7月の2か月分をまとめて報告する
     facts = draft.build_month_facts(_history(), election_months=[(2022, 7)], since=(2022, 5))
@@ -51,6 +53,7 @@ def test_build_month_facts_falls_back_to_single_month_when_since_not_older_than_
     monkeypatch.setattr(national_elections, "compute_election_events", lambda: [])
     monkeypatch.setattr(forecast, "load_forecast_history", lambda: {})
     monkeypatch.setattr(precursor, "load_precursor_table", lambda: [])
+    monkeypatch.setattr(draft, "_cache_refresh_incomplete", lambda: False)
 
     # 前回更新がすでに直近月(7月)そのものだった(同月内の再実行)場合
     facts = draft.build_month_facts(_history(), election_months=[], since=(2022, 7))
@@ -61,6 +64,7 @@ def test_build_month_facts_falls_back_to_single_month_when_since_not_older_than_
 def test_build_month_facts_forecast_check_covers_every_month_in_period_with_a_recorded_forecast(monkeypatch):
     monkeypatch.setattr(national_elections, "compute_election_events", lambda: [])
     monkeypatch.setattr(precursor, "load_precursor_table", lambda: [])
+    monkeypatch.setattr(draft, "_cache_refresh_incomplete", lambda: False)
     monkeypatch.setattr(
         forecast,
         "load_forecast_history",
@@ -79,9 +83,82 @@ def test_build_month_facts_no_diffs_when_history_has_only_one_month(monkeypatch)
     monkeypatch.setattr(national_elections, "compute_election_events", lambda: [])
     monkeypatch.setattr(forecast, "load_forecast_history", lambda: {})
     monkeypatch.setattr(precursor, "load_precursor_table", lambda: [])
+    monkeypatch.setattr(draft, "_cache_refresh_incomplete", lambda: False)
 
     facts = draft.build_month_facts([_history()[0]], election_months=[], since=None)
     assert facts["diffs"] == {}
+
+
+def test_cache_refresh_incomplete_true_when_either_progress_file_exists(tmp_path, monkeypatch):
+    monkeypatch.setattr(turnover, "REFRESH_PROGRESS_PATH", tmp_path / "head_progress.json")
+    monkeypatch.setattr(municipal_registry, "GIKAI_REFRESH_PROGRESS_PATH", tmp_path / "gikai_progress.json")
+    assert draft._cache_refresh_incomplete() is False
+
+    (tmp_path / "gikai_progress.json").write_text("{}", encoding="utf-8")
+    assert draft._cache_refresh_incomplete() is True
+
+
+def test_build_month_facts_propagates_cache_refresh_incomplete_flag(monkeypatch):
+    monkeypatch.setattr(national_elections, "compute_election_events", lambda: [])
+    monkeypatch.setattr(forecast, "load_forecast_history", lambda: {})
+    monkeypatch.setattr(precursor, "load_precursor_table", lambda: [])
+    monkeypatch.setattr(draft, "_cache_refresh_incomplete", lambda: True)
+
+    facts = draft.build_month_facts(_history(), election_months=[], since=None)
+    assert facts["cache_refresh_incomplete"] is True
+
+
+def test_format_facts_for_prompt_includes_warning_when_cache_refresh_incomplete():
+    facts = {
+        "year": 2022, "month": 7, "period_start": {"year": 2022, "month": 7},
+        "C_p": {}, "diffs": {}, "n_events": 0, "level_weight_share": {},
+        "events_in_period": [], "forecast_check": None,
+        "next_month": {"year": 2022, "month": 8, "will_forecast": False},
+        "precursor_summary": {}, "cache_refresh_incomplete": True,
+    }
+    text = draft._format_facts_for_prompt(facts)
+    assert "refresh_cli.py" in text
+    assert "警告" in text
+
+
+def test_save_facts_prepends_warning_banner_when_cache_refresh_incomplete(tmp_path):
+    facts = {
+        "year": 2022, "month": 7, "period_start": {"year": 2022, "month": 7},
+        "C_p": {}, "diffs": {}, "n_events": 0, "level_weight_share": {},
+        "events_in_period": [], "forecast_check": None,
+        "next_month": {"year": 2022, "month": 8, "will_forecast": False},
+        "precursor_summary": {}, "cache_refresh_incomplete": True,
+    }
+    path = draft.save_facts(facts, out_dir=tmp_path)
+    text = path.read_text(encoding="utf-8")
+    assert text.startswith("!!! 公開前に必ず確認")
+    assert draft.REFRESH_CLI_COMMAND in text
+
+
+def test_generate_monthly_draft_adds_warning_instruction_when_cache_refresh_incomplete():
+    fake_block = SimpleNamespace(type="text", text="下書き本文")
+    fake_message = SimpleNamespace(content=[fake_block])
+
+    calls = {}
+
+    class FakeMessages:
+        def create(self, **kwargs):
+            calls.update(kwargs)
+            return fake_message
+
+    fake_client = SimpleNamespace(messages=FakeMessages())
+
+    facts = {
+        "year": 2022, "month": 7, "period_start": {"year": 2022, "month": 7},
+        "C_p": {}, "diffs": {}, "n_events": 0,
+        "level_weight_share": {}, "events_in_period": [], "forecast_check": None,
+        "next_month": {"year": 2022, "month": 8, "will_forecast": False},
+        "precursor_summary": {}, "cache_refresh_incomplete": True,
+    }
+    draft.generate_monthly_draft(facts, client=fake_client)
+
+    assert "公開前に必ず確認" in calls["messages"][0]["content"]
+    assert draft.REFRESH_CLI_COMMAND in calls["messages"][0]["content"]
 
 
 def test_format_facts_for_prompt_describes_multi_month_period():
@@ -96,6 +173,7 @@ def test_format_facts_for_prompt_describes_multi_month_period():
         "forecast_check": {"2022-07": {"自由民主党": {"predicted": 0.03, "actual": 0.05}}},
         "next_month": {"year": 2022, "month": 8, "will_forecast": False},
         "precursor_summary": {"自由民主党": {"match": 3, "total": 4}},
+        "cache_refresh_incomplete": False,
     }
     text = draft._format_facts_for_prompt(facts)
     assert "2022年6月〜2022年7月" in text
@@ -113,6 +191,7 @@ def test_format_facts_for_prompt_single_month_when_period_start_equals_latest():
         "events_in_period": [], "forecast_check": None,
         "next_month": {"year": 2022, "month": 8, "will_forecast": False},
         "precursor_summary": {},
+        "cache_refresh_incomplete": False,
     }
     text = draft._format_facts_for_prompt(facts)
     assert "対象月: 2022年7月" in text
@@ -137,6 +216,7 @@ def test_generate_monthly_draft_uses_injected_client_and_extracts_text():
         "level_weight_share": {}, "events_in_period": [], "forecast_check": None,
         "next_month": {"year": 2022, "month": 8, "will_forecast": False},
         "precursor_summary": {},
+        "cache_refresh_incomplete": False,
     }
     text = draft.generate_monthly_draft(facts, client=fake_client)
 
@@ -160,6 +240,7 @@ def test_save_facts_writes_formatted_text_named_by_year_month(tmp_path):
         "forecast_check": None,
         "next_month": {"year": 2022, "month": 8, "will_forecast": False},
         "precursor_summary": {},
+        "cache_refresh_incomplete": False,
     }
     path = draft.save_facts(facts, out_dir=tmp_path)
     assert path == tmp_path / "draft_facts_2022-07.txt"

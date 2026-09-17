@@ -11,10 +11,16 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from . import national_elections, precursor
+from . import municipal_registry, national_elections, precursor, turnover
 from . import forecast as forecast_mod
 
 OUTPUT_DIR = Path(__file__).resolve().parents[2] / "output"
+
+# 選挙結果キャッシュの更新クロールが未完了のときに案内するコマンド。曖昧な
+# 「更新クロールを完走させて」だけでも通じるはずだが(refresh_cli.pyのdocstring
+# 参照)、確実性のため実行環境(共有venvのフルパス)まで明記する(2026-09に
+# ユーザー指示)。
+REFRESH_CLI_COMMAND = "~/Desktop/program/色々/bin/python3 -m seiryoku.refresh_cli"
 
 # 前回、実際に記事(下書き)を書いた対象月の末尾を記録する。月一更新を時計のように
 # 正確に回す気はなく、実行間隔が空くこともある前提のため、「今月」固定ではなく
@@ -139,7 +145,17 @@ def build_month_facts(
         "forecast_check": forecast_check or None,
         "next_month": {"year": next_year, "month": next_month, "will_forecast": will_forecast_next},
         "precursor_summary": precursor_summary,
+        "cache_refresh_incomplete": _cache_refresh_incomplete(),
     }
+
+
+def _cache_refresh_incomplete() -> bool:
+    """選挙結果キャッシュの更新クロール(refresh_cli.py)が完了しないまま
+    中断された進捗ファイルが残っているとTrue。この場合、今月の数値に本来
+    反映されるべき新しい選挙結果が漏れている可能性がある(2026-09にユーザー
+    指摘: クロールが月をまたいで完了しないまま記事生成日を迎えると、沖縄県
+    知事選のような見落としが静かに起こりうる)。"""
+    return turnover.REFRESH_PROGRESS_PATH.exists() or municipal_registry.GIKAI_REFRESH_PROGRESS_PATH.exists()
 
 
 def _format_facts_for_prompt(facts: dict) -> str:
@@ -151,6 +167,12 @@ def _format_facts_for_prompt(facts: dict) -> str:
             f"対象期間: {ps['year']}年{ps['month']}月〜{facts['year']}年{facts['month']}月"
             "(前回の更新から間が空いたため、複数か月分をまとめて報告する)"
         ]
+    if facts["cache_refresh_incomplete"]:
+        lines.append(
+            "警告: 選挙結果キャッシュの更新クロールが完了しないまま中断されている。"
+            "今月の数値に、本来反映されるべき新しい選挙結果が漏れている可能性がある。"
+            "公開前に手動で確認するか、更新クロール(refresh_cli.py)を再実行してから出し直すこと。"
+        )
     lines.append(f"この期間にあった選挙イベント数の合計(直近12か月窓内の合計ではなく単純合計): {facts['n_events']}")
     if facts["events_in_period"]:
         lines.append(f"この期間に投票日があった国政選挙: {', '.join(facts['events_in_period'])}")
@@ -202,11 +224,21 @@ def generate_monthly_draft(facts: dict, client=None) -> str:
 
         client = anthropic.Anthropic()
 
+    warning_instruction = ""
+    if facts["cache_refresh_incomplete"]:
+        warning_instruction = (
+            "なお、事実データ中に「選挙結果キャッシュの更新クロールが完了しないまま"
+            "中断されている」という警告がある場合、記事の見出しより前(本文の一番最初)に"
+            "「公開前に必ず確認: 」で始まる警告文を1行入れ、以下のコマンドを完走させてから"
+            f"出し直すよう促すこと(コマンドはそのまま引用すること): `{REFRESH_CLI_COMMAND}`\n\n"
+        )
+
     user_prompt = (
         "以下は今回の更新分の党勢指数の事実データである(更新間隔は一定ではなく、"
         "複数か月分をまとめて報告することもある)。これをもとに、note連載の"
         "更新記事の下書き(Markdown形式)を書いてほしい。見出しは"
         f"「# 党勢指数 {facts['year']}年{facts['month']}月更新」から始めること。\n\n"
+        + warning_instruction
         + _format_facts_for_prompt(facts)
     )
 
@@ -239,5 +271,16 @@ def save_facts(facts: dict, out_dir: Path = OUTPUT_DIR) -> Path:
         "# このファイルをClaude Code等の対話環境に渡して記事の文章を書いてもらう想定。\n"
         "# スタイルの指示はdraft.SYSTEM_PROMPTを参照。\n\n"
     )
+    if facts["cache_refresh_incomplete"]:
+        # ファイルの一番最初、通常の見出しより前に置く。人間がこのファイルを
+        # そのままこの会話に貼っても、真っ先にこの指示が目に入るようにするため
+        # (2026-09にユーザー指示「下書き先頭部分に再度指示してくれ」)。
+        header = (
+            "!!! 公開前に必ず確認: 選挙結果キャッシュの更新クロールが完了しないまま"
+            "中断されている。今月の数値に反映漏れがある可能性があるため、以下を実行して"
+            "完走させてからcli.pyを再実行し、この下書きを出し直すこと。\n"
+            f"    {REFRESH_CLI_COMMAND}\n"
+            "!!!\n\n"
+        ) + header
     path.write_text(header + _format_facts_for_prompt(facts), encoding="utf-8")
     return path

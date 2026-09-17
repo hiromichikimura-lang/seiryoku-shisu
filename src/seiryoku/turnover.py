@@ -231,7 +231,21 @@ def build_term_chain_cache(
     return state
 
 
-def refresh_stale_term_chains(jichitai_ids: list[int] | None = None) -> dict:
+REFRESH_PROGRESS_PATH = Path(__file__).resolve().parents[2] / "data" / "term_chain_refresh_progress.json"
+
+
+def _load_refresh_progress(default_ids: list[int]) -> dict:
+    if REFRESH_PROGRESS_PATH.exists():
+        return json.loads(REFRESH_PROGRESS_PATH.read_text(encoding="utf-8"))
+    return {"remaining": list(default_ids), "stale": [], "checked": 0}
+
+
+def _save_refresh_progress(progress: dict) -> None:
+    REFRESH_PROGRESS_PATH.parent.mkdir(exist_ok=True)
+    REFRESH_PROGRESS_PATH.write_text(json.dumps(progress, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def refresh_stale_term_chains(jichitai_ids: list[int] | None = None, checkpoint_every: int = 20) -> dict:
     """done_ids入りした自治体は、build_term_chain_cache()が二度と再取得しない
     (中断・再開可能にするための恒久スキップ)。そのため新しい首長選挙が実施されても
     永久に反映されない不具合がある(2026-09、沖縄県知事選で発覚)。
@@ -242,31 +256,47 @@ def refresh_stale_term_chains(jichitai_ids: list[int] | None = None) -> dict:
     次にbuild_term_chain_cache()を呼んだときにそのIDだけが再構築されるようにする。
 
     1788自治体を約4秒間隔(go2senkyo.comのレート制限)で確認するため数時間かかる
-    見込み。記事生成本体とは別の月次ジョブとして実行する想定(refresh_cli.py参照)。
+    見込み。このマシンはハイバネーション・ネットワーク切断が断続的に起こる前提
+    ([[seiryoku_shisu_design]]参照)なので、build_term_chain_cache()と同じ
+    checkpoint_everyごとの進捗保存・再開可能な設計にする(2026-09、この関数だけ
+    保存が末尾の1回きりだったことをユーザーに指摘され追加)。
     """
-    state = load_term_chain_cache()
-    ids = jichitai_ids if jichitai_ids is not None else list(state["done_ids"])
+    if not REFRESH_PROGRESS_PATH.exists():
+        ids = jichitai_ids if jichitai_ids is not None else list(load_term_chain_cache()["done_ids"])
+    else:
+        ids = None  # 進捗ファイル側のremainingを使う
+    progress = _load_refresh_progress(ids or [])
 
-    stale: list[int] = []
-    for jid in ids:
+    state = load_term_chain_cache()
+    total = progress["checked"] + len(progress["remaining"])
+
+    while progress["remaining"]:
+        jid = progress["remaining"].pop(0)
         try:
             completed = _all_completed(jid, force=True)
         except Exception:
-            continue
-        if not completed:
-            continue
-        newest_date = completed[0].vote_date.replace("/", "-")
-        cached_chain = state["chains"].get(str(jid), [])
-        cached_top = cached_chain[0]["vote_date"] if cached_chain else None
-        if newest_date != cached_top:
-            stale.append(jid)
+            completed = []
+        if completed:
+            newest_date = completed[0].vote_date.replace("/", "-")
+            cached_chain = state["chains"].get(str(jid), [])
+            cached_top = cached_chain[0]["vote_date"] if cached_chain else None
+            if newest_date != cached_top:
+                progress["stale"].append(jid)
+        progress["checked"] += 1
+        if progress["checked"] % checkpoint_every == 0:
+            _save_refresh_progress(progress)
+            print(f"refresh checkpoint: {progress['checked']}/{total} checked", flush=True)
 
+    stale = progress["stale"]
     if stale:
         stale_set = set(stale)
         state["done_ids"] = [jid for jid in state["done_ids"] if jid not in stale_set]
         save_term_chain_cache(state)
 
-    return {"checked": len(ids), "stale": stale}
+    if REFRESH_PROGRESS_PATH.exists():
+        REFRESH_PROGRESS_PATH.unlink()
+
+    return {"checked": progress["checked"], "stale": stale}
 
 
 def refresh_and_rebuild_term_chains(jichitai_ids: list[int] | None = None) -> dict:

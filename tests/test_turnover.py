@@ -1,3 +1,5 @@
+import json
+
 from seiryoku import monthly_index, municipal_registry, turnover
 from seiryoku.fetch import diet, jichisoken, population
 from seiryoku.fetch.go2senkyo import Candidate, ElectionHistoryRow
@@ -345,6 +347,7 @@ def test_build_term_chain_stops_at_end_of_history_before_min_year(monkeypatch):
 def test_refresh_stale_term_chains_keeps_id_when_no_newer_election(monkeypatch, tmp_path):
     cache_path = tmp_path / "executive_term_chains.json"
     monkeypatch.setattr(turnover, "TERM_CHAIN_CACHE_PATH", cache_path)
+    monkeypatch.setattr(turnover, "REFRESH_PROGRESS_PATH", tmp_path / "term_chain_refresh_progress.json")
     turnover.save_term_chain_cache(
         {"chains": {"1": [{"vote_date": "2022-09-11", "party": "無所属"}]}, "done_ids": [1], "errors": {}}
     )
@@ -366,6 +369,7 @@ def test_refresh_stale_term_chains_keeps_id_when_no_newer_election(monkeypatch, 
 def test_refresh_stale_term_chains_removes_id_when_newer_election_found(monkeypatch, tmp_path):
     cache_path = tmp_path / "executive_term_chains.json"
     monkeypatch.setattr(turnover, "TERM_CHAIN_CACHE_PATH", cache_path)
+    monkeypatch.setattr(turnover, "REFRESH_PROGRESS_PATH", tmp_path / "term_chain_refresh_progress.json")
     turnover.save_term_chain_cache(
         {"chains": {"3962": [{"vote_date": "2022-09-11", "party": "無所属"}]}, "done_ids": [3962], "errors": {}}
     )
@@ -385,6 +389,7 @@ def test_refresh_stale_term_chains_removes_id_when_newer_election_found(monkeypa
 def test_refresh_stale_term_chains_skips_ids_that_error_without_crashing(monkeypatch, tmp_path):
     cache_path = tmp_path / "executive_term_chains.json"
     monkeypatch.setattr(turnover, "TERM_CHAIN_CACHE_PATH", cache_path)
+    monkeypatch.setattr(turnover, "REFRESH_PROGRESS_PATH", tmp_path / "term_chain_refresh_progress.json")
     turnover.save_term_chain_cache({"chains": {}, "done_ids": [1], "errors": {}})
 
     def boom(jid, kind, force=False):
@@ -398,9 +403,36 @@ def test_refresh_stale_term_chains_skips_ids_that_error_without_crashing(monkeyp
     assert turnover.load_term_chain_cache()["done_ids"] == [1]
 
 
+def test_refresh_stale_term_chains_resumes_from_existing_progress_file(monkeypatch, tmp_path):
+    """途中でプロセスが落ちた場合、保存済みの進捗ファイルから再開し、
+    確認済みのIDを再度取得しに行かないことを確認する。"""
+    cache_path = tmp_path / "executive_term_chains.json"
+    monkeypatch.setattr(turnover, "TERM_CHAIN_CACHE_PATH", cache_path)
+    progress_path = tmp_path / "term_chain_refresh_progress.json"
+    monkeypatch.setattr(turnover, "REFRESH_PROGRESS_PATH", progress_path)
+    turnover.save_term_chain_cache({"chains": {}, "done_ids": [1, 2], "errors": {}})
+
+    # ID 1は前回の実行で確認済み、というつもりの進捗ファイルを事前に用意しておく
+    progress_path.write_text(
+        json.dumps({"remaining": [2], "stale": [], "checked": 1}), encoding="utf-8"
+    )
+
+    def fake_history(jid, kind, force=False):
+        assert jid == 2, "進捗ファイルに残っていないIDを再確認してしまった"
+        return []
+
+    monkeypatch.setattr(turnover.go2senkyo, "jurisdiction_history", fake_history)
+
+    stats = turnover.refresh_stale_term_chains()
+
+    assert stats == {"checked": 2, "stale": []}
+    assert not progress_path.exists()
+
+
 def test_refresh_and_rebuild_term_chains_rebuilds_only_the_stale_id(monkeypatch, tmp_path):
     cache_path = tmp_path / "executive_term_chains.json"
     monkeypatch.setattr(turnover, "TERM_CHAIN_CACHE_PATH", cache_path)
+    monkeypatch.setattr(turnover, "REFRESH_PROGRESS_PATH", tmp_path / "term_chain_refresh_progress.json")
     turnover.save_term_chain_cache(
         {"chains": {"3962": [{"vote_date": "2022-09-11", "party": "無所属"}]}, "done_ids": [3962], "errors": {}}
     )
