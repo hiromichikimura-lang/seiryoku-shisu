@@ -44,23 +44,24 @@ def _party_diff_series(history: list[dict], party: str) -> list[float]:
     return [values[i] - values[i - 1] for i in range(1, len(values))]
 
 
-def _covariate_series(history: list[dict], election_months: list[tuple[int, int]]) -> list[float]:
+def _covariate_value_for_month(year: int, month: int, election_months: list[tuple[int, int]]) -> float:
     """バックテストで使ったcovariate(国政選挙が絡む月は非ゼロ)と同じ定義。
-    月tの差分に対応するcovariateは、月t自体が選挙月なら+1、月tのavailableな
-    直前12か月に選挙があってその選挙がちょうど窓から抜けるタイミングなら-1
-    (両方に該当する場合は加算)。"""
-    months = [(h["year"], h["month"]) for h in history]
+    月(year, month)自体が選挙月なら+1、その直前12か月に選挙があってその選挙が
+    ちょうど窓から抜けるタイミングなら-1(両方に該当する場合は加算)。"""
     election_set = set(election_months)
-    cov = []
-    for i in range(1, len(months)):
-        y, m = months[i]
-        val = 0.0
-        if (y, m) in election_set:
-            val += 1.0
-        if (y - 1, m) in election_set:  # 12か月前(=1年前の同じ月)が選挙月なら窓から抜ける
-            val -= 1.0
-        cov.append(val)
-    return cov
+    val = 0.0
+    if (year, month) in election_set:
+        val += 1.0
+    if (year - 1, month) in election_set:  # 12か月前(=1年前の同じ月)が選挙月なら窓から抜ける
+        val -= 1.0
+    return val
+
+
+def _covariate_series(history: list[dict], election_months: list[tuple[int, int]]) -> list[float]:
+    """historyの各月の差分(_party_diff_seriesと同じ並び、先頭月は含めない)に
+    対応するcovariateの列。"""
+    months = [(h["year"], h["month"]) for h in history]
+    return [_covariate_value_for_month(y, m, election_months) for y, m in months[1:]]
 
 
 def forecast_next_month(
@@ -91,7 +92,12 @@ def forecast_next_month(
     import timesfm
 
     model = timesfm.TimesFM3Forecaster.from_pretrained("google/timesfm-3.0-pytorch", device="cpu")
-    cov_full = np.array(_covariate_series(history, election_months), dtype=np.float32)
+    # past_future_covariatesはcontext_len+horizon分の長さが必要(将来分も既知の
+    # covariateとして渡す設計のため)。予測対象月自身が選挙に絡むかどうかは
+    # should_forecast()で確定済みなので、その月ぶんの値を1つ追加する。
+    next_year, next_month = _next_month(last["year"], last["month"])
+    future_cov = _covariate_value_for_month(next_year, next_month, election_months)
+    cov_full = np.array(_covariate_series(history, election_months) + [future_cov], dtype=np.float32)
 
     result: dict[str, float] = {}
     for party in ADOPTED_PARTIES:

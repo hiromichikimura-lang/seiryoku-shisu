@@ -6,4 +6,4 @@ Type=oneshot
 WorkingDirectory=%h/Desktop/program/色々/20260831_政党影響力指数
 Environment=PYTHONPATH=%h/Desktop/program/色々/20260831_政党影響力指数/src
 EnvironmentFile=-%h/.config/seiryoku-shisu/env
-ExecStart=/usr/bin/python3 -m seiryoku.cli
+ExecStart=%h/Desktop/program/色々/bin/python3 -m seiryoku.cli

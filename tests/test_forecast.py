@@ -63,9 +63,12 @@ def test_forecast_next_month_returns_none_for_empty_history():
 
 @pytest.mark.skipif(not _TIMESFM_AVAILABLE, reason="timesfmがインストールされていない環境ではスキップ")
 def test_forecast_next_month_calls_timesfm_when_election_linked_and_context_is_enough():
-    history = [
+    # 最終月を2022-12にし、その翌月(2023-01、選挙月そのもの)がshould_forecastの
+    # 対象になるようにする。min_context(既定12)を超えるよう13か月分用意する。
+    history = [{"year": 2021, "month": 12, "C_p": {"自由民主党": 0.5}}]
+    history += [
         {"year": 2022, "month": m, "C_p": {"自由民主党": 0.5 + 0.01 * m}}
-        for m in range(1, 14)
+        for m in range(1, 13)
     ]
     result = forecast.forecast_next_month(history, election_months=[(2023, 1)])
     assert result is not None
