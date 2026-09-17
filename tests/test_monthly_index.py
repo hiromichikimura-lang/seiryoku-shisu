@@ -21,15 +21,25 @@ def test_snapshots_from_windows_sums_entries_across_the_window():
         (2024, 2): [],
         (2024, 3): [({"公明党": 1.0}, 4.0)],
     }
+    type_weight_by_month = {
+        (2024, 1): [("衆院選", 4.0)],
+        (2024, 2): [],
+        (2024, 3): [("市区町村議会", 4.0)],
+    }
     months = [(2024, 1), (2024, 2), (2024, 3)]
 
-    single = monthly_index._snapshots_from_windows(entries_by_month, months, window_months=1)
+    single = monthly_index._snapshots_from_windows(
+        entries_by_month, type_weight_by_month, months, window_months=1
+    )
     by_month = {(s.year, s.month): s for s in single}
     assert (2024, 2) not in by_month  # その月単独では選挙が無い
     assert by_month[(2024, 1)].C_p == {"自由民主党": 1.0}
+    assert by_month[(2024, 1)].level_weight_share["衆院選"] == 1.0
     assert by_month[(2024, 3)].C_p == {"公明党": 1.0}
 
-    windowed = monthly_index._snapshots_from_windows(entries_by_month, months, window_months=3)
+    windowed = monthly_index._snapshots_from_windows(
+        entries_by_month, type_weight_by_month, months, window_months=3
+    )
     by_month_w = {(s.year, s.month): s for s in windowed}
     # 2024-02は単独では選挙が無いが、3か月ウィンドウなら1月ぶんを含む
     assert by_month_w[(2024, 2)].C_p == {"自由民主党": 1.0}
@@ -37,6 +47,9 @@ def test_snapshots_from_windows_sums_entries_across_the_window():
     # 2024-03は1月・3月の両方を含む(自民・公明が半々)
     assert by_month_w[(2024, 3)].C_p == {"自由民主党": 0.5, "公明党": 0.5}
     assert by_month_w[(2024, 3)].n_events == 2
+    # 重みシェアの内訳も同じウィンドウで合算される(衆院選・市区町村議会が半々)
+    assert by_month_w[(2024, 3)].level_weight_share["衆院選"] == 0.5
+    assert by_month_w[(2024, 3)].level_weight_share["市区町村議会"] == 0.5
 
 
 def test_month_range_crosses_year_boundary():
@@ -237,3 +250,43 @@ def test_build_month_snapshots_includes_assembly_elections_without_jichisoken_co
     expected_ind = (gikai_w * 0.4) / total_w
     assert snapshot.C_p["自由民主党"] == expected_ldp
     assert snapshot.C_p["無所属"] == expected_ind
+
+
+def test_build_month_snapshots_local_only_excludes_diet_elections(monkeypatch):
+    """local_only=Trueは衆参の国政選挙イベントを一切含めない「地方選挙限定」の
+    系列を作る(precursor.pyで「地方選は国政選挙の前哨戦か」を検証するために使う)。
+    fetch_sangiin_election_history等を呼ばずに済むよう、呼ばれたら例外にして確認する。
+    """
+    from seiryoku.fetch import diet
+
+    def _boom():
+        raise AssertionError("local_only=Trueなのに国政選挙データを取得しようとした")
+
+    monkeypatch.setattr(diet_history, "fetch_sangiin_election_history", _boom)
+    monkeypatch.setattr(diet_history, "fetch_shugiin_history", _boom)
+    monkeypatch.setattr(diet, "fetch_diet_seats", lambda: {"衆議院": {"自由民主党": 5}})
+    monkeypatch.setattr(monthly_index, "_latest_shugiin_district_pct", lambda: {})
+    monkeypatch.setattr(monthly_index, "_latest_sangiin_district_pct", lambda: {})
+    monkeypatch.setattr(population, "national_population", lambda: 10000)
+    monkeypatch.setattr(turnover, "_ensure_governor_ids_loaded", lambda: None)
+    monkeypatch.setattr(turnover, "_GOVERNOR_JICHITAI_IDS", {})
+    monkeypatch.setattr(
+        turnover,
+        "load_term_chain_cache",
+        lambda: {"chains": {"1": [{"vote_date": "2022-04-10", "party": "自由民主党"}]}},
+    )
+    monkeypatch.setattr(municipal_registry, "jurisdiction_name", lambda jid: "A市")
+    monkeypatch.setattr(municipal_registry, "load_gikai_term_chain_cache", lambda: {"chains": {}})
+    monkeypatch.setattr(population, "prefecture_population_by_name", lambda: {})
+    monkeypatch.setattr(population, "municipal_population_by_name", lambda: {"A市": 10000})
+    monkeypatch.setattr(jichisoken, "governor_endorsements_by_year", lambda: {})
+    monkeypatch.setattr(jichisoken, "municipal_head_endorsements_by_year", lambda: {})
+    monkeypatch.setattr(
+        jichisoken, "endorsement_for_vote_year", lambda by_year, name, vote_date: None
+    )
+
+    snapshots = monthly_index.build_month_snapshots(min_year=2022, window_months=1, local_only=True)
+    by_month = {(s.year, s.month): s for s in snapshots}
+
+    assert (2022, 4) in by_month
+    assert by_month[(2022, 4)].C_p == {"自由民主党": 1.0}

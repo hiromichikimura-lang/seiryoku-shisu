@@ -1,4 +1,4 @@
-"""党勢推移指数$C_p(t)$を月次のフロー指標として再構成する。
+"""党勢指数$C_p(t)$を月次のフロー指標として再構成する。
 
 2026-09にユーザー指示で、ストック指標(現時点で誰が何を保有しているかを
 全自治体+国会について毎月積み上げる方式)からフロー指標(その月に実際に
@@ -137,15 +137,23 @@ def _current_national_parties() -> set[str]:
     )
 
 
+# 重みシェアの内訳(図1中段)で使う選挙種別ラベル。build_month_snapshotsが
+# 各エントリに付与し、_snapshots_from_windowsが窓内で合算する。
+LEVEL_TYPES = ["衆院選", "参院選", "都道府県知事", "都道府県議会", "市区町村長", "市区町村議会"]
+
+
 @dataclass
 class MonthSnapshot:
     year: int
     month: int
     C_p: dict[str, float]
     n_events: int
+    level_weight_share: dict[str, float]
 
 
-def build_month_snapshots(min_year: int = MIN_YEAR, window_months: int = 12) -> list[MonthSnapshot]:
+def build_month_snapshots(
+    min_year: int = MIN_YEAR, window_months: int = 12, local_only: bool = False
+) -> list[MonthSnapshot]:
     """min_year以降、月ごとにその月を含めてwindow_monthsか月分遡って実際にあった
     選挙を集計してC_p(t)を再構成する(モジュールdocstring参照)。既定の12か月は、
     どの時点で切っても暦月の構成が同じになり、統一地方選のような季節的な偏りを
@@ -153,14 +161,24 @@ def build_month_snapshots(min_year: int = MIN_YEAR, window_months: int = 12) -> 
 
     window_months=1にすると単月集計(季節変動を含む生の値)に戻る。窓を長くする
     ほど標本は増えて振れは小さくなるが、直近の変化への追従は遅くなるトレードオフがある。
+
+    local_only=Trueにすると衆参の国政選挙イベントを一切含めない「地方選挙限定」の
+    系列を再構成する。「地方選は国政選挙の前哨戦か」を検証するために2026-09に
+    追加(precursor.py参照)。以前はdiet_history.fetch_sangiin_election_history等を
+    空リストに差し替えるモンキーパッチで代用していたが、そのやり方は呼び出し側の
+    コードを書き換える必要がありテストしにくいため、正式なパラメータに昇格した。
     """
     import math
 
     from . import municipal_registry, turnover
     from .fetch import jichisoken
 
-    sangiin_entries = [(_ym(s.date), s.seats) for s in diet_history.fetch_sangiin_election_history()]
-    shugiin_entries = [(_ym(s.date), s.seats) for s in diet_history.fetch_shugiin_history()]
+    if local_only:
+        sangiin_entries: list[tuple[tuple[int, int] | None, dict[str, int]]] = []
+        shugiin_entries: list[tuple[tuple[int, int] | None, dict[str, int]]] = []
+    else:
+        sangiin_entries = [(_ym(s.date), s.seats) for s in diet_history.fetch_sangiin_election_history()]
+        shugiin_entries = [(_ym(s.date), s.seats) for s in diet_history.fetch_shugiin_history()]
     national_pop = population.national_population()
     national_parties = _current_national_parties()
 
@@ -178,12 +196,15 @@ def build_month_snapshots(min_year: int = MIN_YEAR, window_months: int = 12) -> 
         jid = int(jid_str)
         parsed = _parsed_chain(chain)
         if jid in gov_id_to_name:
-            name, size, by_year = gov_id_to_name[jid], pref_pop.get(gov_id_to_name[jid]), gov_by_year
+            name, size, by_year, level_type = (
+                gov_id_to_name[jid], pref_pop.get(gov_id_to_name[jid]), gov_by_year, "都道府県知事",
+            )
         else:
             name = municipal_registry.jurisdiction_name(jid)
             size, by_year = (muni_pop.get(name), muni_by_year) if name else (None, None)
+            level_type = "市区町村長"
         if name and size is not None:
-            local_entries.append((name, parsed, size, by_year))
+            local_entries.append((name, parsed, size, by_year, level_type))
 
     # 都道府県議会・市区町村議会(gikai)は、首長と違い候補者個人の推薦・支持政党を
     # 記録した情報源が無いため、jichisoken補正は試みず届出政党のみで$\\phi_p(e)$を
@@ -196,48 +217,64 @@ def build_month_snapshots(min_year: int = MIN_YEAR, window_months: int = 12) -> 
         parsed = _parsed_chain(chain)
         if jid in gov_id_to_name:
             size = pref_pop.get(gov_id_to_name[jid])
+            level_type = "都道府県議会"
         else:
             name = municipal_registry.jurisdiction_name(jid)
             size = muni_pop.get(name) if name else None
+            level_type = "市区町村議会"
         if size is not None:
-            gikai_local_entries.append((parsed, size))
+            gikai_local_entries.append((parsed, size, level_type))
 
     today = date.today()
     months = _month_range((min_year, 1), (today.year, today.month))
 
     # 月ごとの生イベント(shares, weight)をまず作っておき、window_months分だけ
     # 遡って合算する(スライディングウィンドウ、2026-09にユーザー指示で追加)。
+    # type_weight_by_monthは同じイベントを(選挙種別ラベル, weight)として並行して
+    # 記録したもので、図1中段の「重みシェアの内訳」を出すために使う
+    # (2026-09にユーザー指示、以前は別スクリプトで同じ集計をやり直していた)。
     entries_by_month: dict[tuple[int, int], list[tuple[dict[str, float], float]]] = {}
+    type_weight_by_month: dict[tuple[int, int], list[tuple[str, float]]] = {}
     for ym in months:
         entries: list[tuple[dict[str, float], float]] = []
+        type_weights: list[tuple[str, float]] = []
 
-        for name, parsed, size, by_year in local_entries:
+        for name, parsed, size, by_year, level_type in local_entries:
             for term in _terms_in_month(parsed, ym):
                 endorsement = jichisoken.endorsement_for_vote_year(by_year, name, term["vote_date"])
                 endorsing = endorsement.endorsing_parties if endorsement else []
                 shares = _effective_party_shares(term["party"], endorsing, national_parties)
-                entries.append((shares, math.sqrt(size)))
+                w = math.sqrt(size)
+                entries.append((shares, w))
+                type_weights.append((level_type, w))
 
-        for parsed, size in gikai_local_entries:
+        for parsed, size, level_type in gikai_local_entries:
             for term in _terms_in_month(parsed, ym):
                 seats = term["seats"]
                 n_e = sum(seats.values())
                 if n_e == 0:
                     continue
-                entries.append((_phi(seats, national_parties), math.sqrt(n_e * size)))
+                w = math.sqrt(n_e * size)
+                entries.append((_phi(seats, national_parties), w))
+                type_weights.append((level_type, w))
 
         for date_key, seats in sangiin_entries:
             if date_key == ym:
                 n_e = sum(seats.values())
-                entries.append((_phi(seats, national_parties), math.sqrt(n_e * national_pop)))
+                w = math.sqrt(n_e * national_pop)
+                entries.append((_phi(seats, national_parties), w))
+                type_weights.append(("参院選", w))
         for date_key, seats in shugiin_entries:
             if date_key == ym:
                 n_e = sum(seats.values())
-                entries.append((_phi(seats, national_parties), math.sqrt(n_e * national_pop)))
+                w = math.sqrt(n_e * national_pop)
+                entries.append((_phi(seats, national_parties), w))
+                type_weights.append(("衆院選", w))
 
         entries_by_month[ym] = entries
+        type_weight_by_month[ym] = type_weights
 
-    return _snapshots_from_windows(entries_by_month, months, window_months)
+    return _snapshots_from_windows(entries_by_month, type_weight_by_month, months, window_months)
 
 
 def _months_back(ym: tuple[int, int], n: int) -> list[tuple[int, int]]:
@@ -252,8 +289,21 @@ def _months_back(ym: tuple[int, int], n: int) -> list[tuple[int, int]]:
     return result
 
 
+def _level_weight_share(type_weights: list[tuple[str, float]]) -> dict[str, float]:
+    """[(選挙種別ラベル, weight)]から種別ごとの重みシェアを求める。全体の重みが
+    0(local_only=Trueで国政選挙が窓内に無い等)の場合は空dictを返す。"""
+    totals = {t: 0.0 for t in LEVEL_TYPES}
+    for label, w in type_weights:
+        totals[label] = totals.get(label, 0.0) + w
+    grand_total = sum(totals.values())
+    if not grand_total:
+        return {}
+    return {t: v / grand_total for t, v in totals.items()}
+
+
 def _snapshots_from_windows(
     entries_by_month: dict[tuple[int, int], list[tuple[dict[str, float], float]]],
+    type_weight_by_month: dict[tuple[int, int], list[tuple[str, float]]],
     months: list[tuple[int, int]],
     window_months: int,
 ) -> list[MonthSnapshot]:
@@ -262,8 +312,10 @@ def _snapshots_from_windows(
         if ym not in entries_by_month:
             continue
         window_entries: list[tuple[dict[str, float], float]] = []
+        window_type_weights: list[tuple[str, float]] = []
         for w in _months_back(ym, window_months):
             window_entries.extend(entries_by_month.get(w, []))
+            window_type_weights.extend(type_weight_by_month.get(w, []))
         if not window_entries:
             continue
         results.append(
@@ -272,6 +324,7 @@ def _snapshots_from_windows(
                 month=ym[1],
                 C_p=weighted_share_by_jurisdiction(window_entries),
                 n_events=len(window_entries),
+                level_weight_share=_level_weight_share(window_type_weights),
             )
         )
     return results

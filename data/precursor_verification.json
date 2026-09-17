@@ -1,0 +1,218 @@
+[
+  {
+    "chamber": "参院選",
+    "election_a": "2019-07-21",
+    "election_b": "2022-07-10",
+    "party": "自由民主党",
+    "local_direction": -1,
+    "actual_direction": 1,
+    "match": false
+  },
+  {
+    "chamber": "参院選",
+    "election_a": "2019-07-21",
+    "election_b": "2022-07-10",
+    "party": "公明党",
+    "local_direction": -1,
+    "actual_direction": -1,
+    "match": true
+  },
+  {
+    "chamber": "参院選",
+    "election_a": "2019-07-21",
+    "election_b": "2022-07-10",
+    "party": "立憲民主党",
+    "local_direction": -1,
+    "actual_direction": -1,
+    "match": true
+  },
+  {
+    "chamber": "参院選",
+    "election_a": "2019-07-21",
+    "election_b": "2022-07-10",
+    "party": "日本維新の会",
+    "local_direction": -1,
+    "actual_direction": 1,
+    "match": false
+  },
+  {
+    "chamber": "参院選",
+    "election_a": "2019-07-21",
+    "election_b": "2022-07-10",
+    "party": "国民民主党",
+    "local_direction": -1,
+    "actual_direction": -1,
+    "match": true
+  },
+  {
+    "chamber": "参院選",
+    "election_a": "2019-07-21",
+    "election_b": "2022-07-10",
+    "party": "日本共産党",
+    "local_direction": -1,
+    "actual_direction": -1,
+    "match": true
+  },
+  {
+    "chamber": "参院選",
+    "election_a": "2022-07-10",
+    "election_b": "2025-07-20",
+    "party": "自由民主党",
+    "local_direction": -1,
+    "actual_direction": -1,
+    "match": true
+  },
+  {
+    "chamber": "参院選",
+    "election_a": "2022-07-10",
+    "election_b": "2025-07-20",
+    "party": "公明党",
+    "local_direction": 1,
+    "actual_direction": -1,
+    "match": false
+  },
+  {
+    "chamber": "参院選",
+    "election_a": "2022-07-10",
+    "election_b": "2025-07-20",
+    "party": "立憲民主党",
+    "local_direction": 1,
+    "actual_direction": 1,
+    "match": true
+  },
+  {
+    "chamber": "参院選",
+    "election_a": "2022-07-10",
+    "election_b": "2025-07-20",
+    "party": "日本維新の会",
+    "local_direction": 1,
+    "actual_direction": -1,
+    "match": false
+  },
+  {
+    "chamber": "参院選",
+    "election_a": "2022-07-10",
+    "election_b": "2025-07-20",
+    "party": "国民民主党",
+    "local_direction": 1,
+    "actual_direction": 1,
+    "match": true
+  },
+  {
+    "chamber": "参院選",
+    "election_a": "2022-07-10",
+    "election_b": "2025-07-20",
+    "party": "日本共産党",
+    "local_direction": -1,
+    "actual_direction": -1,
+    "match": true
+  },
+  {
+    "chamber": "衆院選",
+    "election_a": "2021-10-31",
+    "election_b": "2024-10-27",
+    "party": "自由民主党",
+    "local_direction": 1,
+    "actual_direction": -1,
+    "match": false
+  },
+  {
+    "chamber": "衆院選",
+    "election_a": "2021-10-31",
+    "election_b": "2024-10-27",
+    "party": "公明党",
+    "local_direction": -1,
+    "actual_direction": -1,
+    "match": true
+  },
+  {
+    "chamber": "衆院選",
+    "election_a": "2021-10-31",
+    "election_b": "2024-10-27",
+    "party": "立憲民主党",
+    "local_direction": 1,
+    "actual_direction": 1,
+    "match": true
+  },
+  {
+    "chamber": "衆院選",
+    "election_a": "2021-10-31",
+    "election_b": "2024-10-27",
+    "party": "日本維新の会",
+    "local_direction": 1,
+    "actual_direction": -1,
+    "match": false
+  },
+  {
+    "chamber": "衆院選",
+    "election_a": "2021-10-31",
+    "election_b": "2024-10-27",
+    "party": "国民民主党",
+    "local_direction": 1,
+    "actual_direction": 1,
+    "match": true
+  },
+  {
+    "chamber": "衆院選",
+    "election_a": "2021-10-31",
+    "election_b": "2024-10-27",
+    "party": "日本共産党",
+    "local_direction": -1,
+    "actual_direction": -1,
+    "match": true
+  },
+  {
+    "chamber": "衆院選",
+    "election_a": "2024-10-27",
+    "election_b": "2026-02-08",
+    "party": "自由民主党",
+    "local_direction": -1,
+    "actual_direction": 1,
+    "match": false
+  },
+  {
+    "chamber": "衆院選",
+    "election_a": "2024-10-27",
+    "election_b": "2026-02-08",
+    "party": "公明党",
+    "local_direction": 1,
+    "actual_direction": -1,
+    "match": false
+  },
+  {
+    "chamber": "衆院選",
+    "election_a": "2024-10-27",
+    "election_b": "2026-02-08",
+    "party": "立憲民主党",
+    "local_direction": -1,
+    "actual_direction": -1,
+    "match": true
+  },
+  {
+    "chamber": "衆院選",
+    "election_a": "2024-10-27",
+    "election_b": "2026-02-08",
+    "party": "日本維新の会",
+    "local_direction": -1,
+    "actual_direction": -1,
+    "match": true
+  },
+  {
+    "chamber": "衆院選",
+    "election_a": "2024-10-27",
+    "election_b": "2026-02-08",
+    "party": "国民民主党",
+    "local_direction": 1,
+    "actual_direction": -1,
+    "match": false
+  },
+  {
+    "chamber": "衆院選",
+    "election_a": "2024-10-27",
+    "election_b": "2026-02-08",
+    "party": "日本共産党",
+    "local_direction": -1,
+    "actual_direction": -1,
+    "match": true
+  }
+]

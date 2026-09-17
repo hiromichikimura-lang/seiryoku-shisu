@@ -5,4 +5,5 @@ Description=政党影響力指数の月次更新
 Type=oneshot
 WorkingDirectory=%h/Desktop/program/色々/20260831_政党影響力指数
 Environment=PYTHONPATH=%h/Desktop/program/色々/20260831_政党影響力指数/src
+EnvironmentFile=-%h/.config/seiryoku-shisu/env
 ExecStart=/usr/bin/python3 -m seiryoku.cli
