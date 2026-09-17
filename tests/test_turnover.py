@@ -302,7 +302,7 @@ def test_build_term_chain_stops_once_min_year_reached(monkeypatch):
         _row("A市長選挙", "2017/04/23", detail_url="https://x/3"),
         _row("A市長選挙", "2013/04/07", detail_url="https://x/4"),  # min_yearより前なので到達不要
     ]
-    monkeypatch.setattr(turnover.go2senkyo, "jurisdiction_history", lambda jid, kind: history)
+    monkeypatch.setattr(turnover.go2senkyo, "jurisdiction_history", lambda jid, kind, force=False: history)
 
     parties = {
         "https://x/1": "自由民主党",
@@ -330,7 +330,7 @@ def test_build_term_chain_stops_at_end_of_history_before_min_year(monkeypatch):
     history = [
         _row("A市長選挙", "2021/04/11", detail_url="https://x/1"),
     ]
-    monkeypatch.setattr(turnover.go2senkyo, "jurisdiction_history", lambda jid, kind: history)
+    monkeypatch.setattr(turnover.go2senkyo, "jurisdiction_history", lambda jid, kind, force=False: history)
     monkeypatch.setattr(
         turnover.go2senkyo,
         "parse_candidates",
@@ -340,6 +340,88 @@ def test_build_term_chain_stops_at_end_of_history_before_min_year(monkeypatch):
     chain = _build_term_chain(1, min_year=2000)
 
     assert chain == [{"vote_date": "2021-04-11", "party": "自由民主党"}]
+
+
+def test_refresh_stale_term_chains_keeps_id_when_no_newer_election(monkeypatch, tmp_path):
+    cache_path = tmp_path / "executive_term_chains.json"
+    monkeypatch.setattr(turnover, "TERM_CHAIN_CACHE_PATH", cache_path)
+    turnover.save_term_chain_cache(
+        {"chains": {"1": [{"vote_date": "2022-09-11", "party": "無所属"}]}, "done_ids": [1], "errors": {}}
+    )
+
+    history = [_row("沖縄県知事選挙", "2022/09/11", detail_url="https://x/1")]
+
+    def fake_history(jid, kind, force=False):
+        assert force is True, "強制再取得(force=True)でないと新しい選挙を見逃す"
+        return history
+
+    monkeypatch.setattr(turnover.go2senkyo, "jurisdiction_history", fake_history)
+
+    stats = turnover.refresh_stale_term_chains([1])
+
+    assert stats == {"checked": 1, "stale": []}
+    assert turnover.load_term_chain_cache()["done_ids"] == [1]
+
+
+def test_refresh_stale_term_chains_removes_id_when_newer_election_found(monkeypatch, tmp_path):
+    cache_path = tmp_path / "executive_term_chains.json"
+    monkeypatch.setattr(turnover, "TERM_CHAIN_CACHE_PATH", cache_path)
+    turnover.save_term_chain_cache(
+        {"chains": {"3962": [{"vote_date": "2022-09-11", "party": "無所属"}]}, "done_ids": [3962], "errors": {}}
+    )
+
+    history = [
+        _row("沖縄県知事選挙", "2026/09/13", detail_url="https://x/new"),
+        _row("沖縄県知事選挙", "2022/09/11", detail_url="https://x/1"),
+    ]
+    monkeypatch.setattr(turnover.go2senkyo, "jurisdiction_history", lambda jid, kind, force=False: history)
+
+    stats = turnover.refresh_stale_term_chains([3962])
+
+    assert stats == {"checked": 1, "stale": [3962]}
+    assert turnover.load_term_chain_cache()["done_ids"] == []
+
+
+def test_refresh_stale_term_chains_skips_ids_that_error_without_crashing(monkeypatch, tmp_path):
+    cache_path = tmp_path / "executive_term_chains.json"
+    monkeypatch.setattr(turnover, "TERM_CHAIN_CACHE_PATH", cache_path)
+    turnover.save_term_chain_cache({"chains": {}, "done_ids": [1], "errors": {}})
+
+    def boom(jid, kind, force=False):
+        raise RuntimeError("network down")
+
+    monkeypatch.setattr(turnover.go2senkyo, "jurisdiction_history", boom)
+
+    stats = turnover.refresh_stale_term_chains([1])
+
+    assert stats == {"checked": 1, "stale": []}
+    assert turnover.load_term_chain_cache()["done_ids"] == [1]
+
+
+def test_refresh_and_rebuild_term_chains_rebuilds_only_the_stale_id(monkeypatch, tmp_path):
+    cache_path = tmp_path / "executive_term_chains.json"
+    monkeypatch.setattr(turnover, "TERM_CHAIN_CACHE_PATH", cache_path)
+    turnover.save_term_chain_cache(
+        {"chains": {"3962": [{"vote_date": "2022-09-11", "party": "無所属"}]}, "done_ids": [3962], "errors": {}}
+    )
+
+    history = [
+        _row("沖縄県知事選挙", "2026/09/13", detail_url="https://x/new"),
+        _row("沖縄県知事選挙", "2022/09/11", detail_url="https://x/1"),
+    ]
+    monkeypatch.setattr(turnover.go2senkyo, "jurisdiction_history", lambda jid, kind, force=False: history)
+    monkeypatch.setattr(
+        turnover.go2senkyo,
+        "parse_candidates",
+        lambda url: [Candidate(name="甲", party="無所属", elected=True)],
+    )
+
+    stats = turnover.refresh_and_rebuild_term_chains([3962])
+
+    assert stats["stale"] == [3962]
+    state = turnover.load_term_chain_cache()
+    assert state["done_ids"] == [3962]  # build_term_chain_cacheで再度done扱いになる
+    assert state["chains"]["3962"][0]["vote_date"] == "2026-09-13"
 
 
 def test_build_turnover_month_snapshots_reconstructs_every_transition_in_chain(monkeypatch):

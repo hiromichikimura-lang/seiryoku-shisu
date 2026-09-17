@@ -1,0 +1,9 @@
+[Unit]
+Description=党勢指数の選挙結果キャッシュ更新クロール(首長・議会、数時間かかる)
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h/Desktop/program/色々/20260831_政党影響力指数
+Environment=PYTHONPATH=%h/Desktop/program/色々/20260831_政党影響力指数/src
+TimeoutStartSec=0
+ExecStart=%h/Desktop/program/色々/bin/python3 -m seiryoku.refresh_cli

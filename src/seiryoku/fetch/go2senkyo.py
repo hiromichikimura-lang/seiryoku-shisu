@@ -33,10 +33,14 @@ class Candidate:
     elected: bool
 
 
-def jurisdiction_history(jichitai_id: int, kind: str = "head") -> list[ElectionHistoryRow]:
-    """自治体(jichitai_id)の首長("head")または議会("gikai")の選挙履歴を返す。新しい順。"""
+def jurisdiction_history(jichitai_id: int, kind: str = "head", force: bool = False) -> list[ElectionHistoryRow]:
+    """自治体(jichitai_id)の首長("head")または議会("gikai")の選挙履歴を返す。新しい順。
+
+    force=Trueで、util.fetchの永続キャッシュを無視して再取得する(新しい選挙結果が
+    出ていないか確認する用途、turnover.refresh_stale_term_chains参照)。
+    """
     url = f"{_BASE}/local/jichitai/{jichitai_id}/{kind}"
-    html = fetch(url).decode("utf-8", errors="ignore")
+    html = fetch(url, force=force).decode("utf-8", errors="ignore")
     soup = BeautifulSoup(html, "html.parser")
 
     rows: list[ElectionHistoryRow] = []

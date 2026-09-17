@@ -309,6 +309,50 @@ def build_gikai_term_chain_cache(
     return state
 
 
+def refresh_stale_gikai_term_chains(jichitai_ids: list[int] | None = None) -> dict:
+    """turnover.refresh_stale_term_chains()の議会版。done_ids入りした自治体は
+    build_gikai_term_chain_cache()が二度と再取得しないため、新しい議会選挙が
+    実施されても永久に反映されない同じ不具合がある(2026-09発覚)。
+
+    既にdone_idsに入っている自治体について、go2senkyoの最新ページを強制的に
+    再取得し、キャッシュ済みチェーンの先頭より新しい完了済み選挙が無いか確認する。
+    見つかればdone_idsから外す。"""
+    state = load_gikai_term_chain_cache()
+    ids = jichitai_ids if jichitai_ids is not None else list(state["done_ids"])
+
+    stale: list[int] = []
+    for jid in ids:
+        try:
+            history = go2senkyo.jurisdiction_history(jid, "gikai", force=True)
+        except Exception:
+            continue
+        completed = _all_completed_gikai(history)
+        if not completed:
+            continue
+        newest_date = completed[0].vote_date.replace("/", "-")
+        cached_chain = state["chains"].get(str(jid), [])
+        cached_top = cached_chain[0]["vote_date"] if cached_chain else None
+        if newest_date != cached_top:
+            stale.append(jid)
+
+    if stale:
+        stale_set = set(stale)
+        state["done_ids"] = [jid for jid in state["done_ids"] if jid not in stale_set]
+        save_gikai_term_chain_cache(state)
+
+    return {"checked": len(ids), "stale": stale}
+
+
+def refresh_and_rebuild_gikai_term_chains(jichitai_ids: list[int] | None = None) -> dict:
+    """refresh_stale_gikai_term_chains()で見つかった更新対象だけを、その場で
+    build_gikai_term_chain_cache()により再構築する(引数無しで呼ぶと未処理の
+    全自治体まで対象になってしまうため、見つかったIDだけを明示的に渡す)。"""
+    stats = refresh_stale_gikai_term_chains(jichitai_ids)
+    if stats["stale"]:
+        build_gikai_term_chain_cache(jichitai_ids=stats["stale"])
+    return stats
+
+
 def coverage_report(state: dict, ids: list[int] | None = None) -> dict:
     """網羅率を返す。「不明」を推測で埋めていないことが分かるよう明示する。"""
     ids = ids if ids is not None else load_jichitai_ids()
