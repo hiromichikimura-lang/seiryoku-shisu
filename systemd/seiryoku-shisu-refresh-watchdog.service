@@ -1,0 +1,9 @@
+[Unit]
+Description=党勢指数の更新クロールが未完了なら自動再開する日次ウォッチドッグ(一時的、約10日で自動的に打ち切り)
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h/Desktop/program/色々/20260831_政党影響力指数
+Environment=PYTHONPATH=%h/Desktop/program/色々/20260831_政党影響力指数/src
+TimeoutStartSec=0
+ExecStart=%h/Desktop/program/色々/bin/python3 -m seiryoku.refresh_watchdog

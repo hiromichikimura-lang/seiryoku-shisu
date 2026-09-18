@@ -1,3 +1,5 @@
+import pytest
+
 from seiryoku import monthly_index, municipal_registry, turnover
 from seiryoku.fetch import diet_history, jichisoken, population
 from seiryoku.fetch.diet_history import Snapshot
@@ -16,40 +18,78 @@ def test_months_back_crosses_year_boundary():
 
 
 def test_snapshots_from_windows_sums_entries_across_the_window():
+    # (level_type, raw_weight=n_e*P_e, shares)。1月・3月とも同じraw_weightの
+    # 単一イベントなので、階層内合計→平方根の新定義でも旧定義と同じ結果になる
+    # (単一イベントの階層では$\\sqrt{a}$と$\\sqrt{a}$で差が出ないため)。
     entries_by_month = {
-        (2024, 1): [({"自由民主党": 1.0}, 4.0)],
+        (2024, 1): [("衆院選", 16.0, {"自由民主党": 1.0})],
         (2024, 2): [],
-        (2024, 3): [({"公明党": 1.0}, 4.0)],
-    }
-    type_weight_by_month = {
-        (2024, 1): [("衆院選", 4.0)],
-        (2024, 2): [],
-        (2024, 3): [("市区町村議会", 4.0)],
+        (2024, 3): [("市区町村議会", 16.0, {"公明党": 1.0})],
     }
     months = [(2024, 1), (2024, 2), (2024, 3)]
 
-    single = monthly_index._snapshots_from_windows(
-        entries_by_month, type_weight_by_month, months, window_months=1
-    )
+    single = monthly_index._snapshots_from_windows(entries_by_month, months, window_months=1)
     by_month = {(s.year, s.month): s for s in single}
     assert (2024, 2) not in by_month  # その月単独では選挙が無い
     assert by_month[(2024, 1)].C_p == {"自由民主党": 1.0}
     assert by_month[(2024, 1)].level_weight_share["衆院選"] == 1.0
     assert by_month[(2024, 3)].C_p == {"公明党": 1.0}
 
-    windowed = monthly_index._snapshots_from_windows(
-        entries_by_month, type_weight_by_month, months, window_months=3
-    )
+    windowed = monthly_index._snapshots_from_windows(entries_by_month, months, window_months=3)
     by_month_w = {(s.year, s.month): s for s in windowed}
     # 2024-02は単独では選挙が無いが、3か月ウィンドウなら1月ぶんを含む
     assert by_month_w[(2024, 2)].C_p == {"自由民主党": 1.0}
     assert by_month_w[(2024, 2)].n_events == 1
-    # 2024-03は1月・3月の両方を含む(自民・公明が半々)
+    # 2024-03は1月・3月の両方を含む(衆院選・市区町村議会の階層重みが同じなので自民・公明が半々)
     assert by_month_w[(2024, 3)].C_p == {"自由民主党": 0.5, "公明党": 0.5}
     assert by_month_w[(2024, 3)].n_events == 2
     # 重みシェアの内訳も同じウィンドウで合算される(衆院選・市区町村議会が半々)
     assert by_month_w[(2024, 3)].level_weight_share["衆院選"] == 0.5
     assert by_month_w[(2024, 3)].level_weight_share["市区町村議会"] == 0.5
+
+
+def test_level_aggregate_is_invariant_to_how_a_level_is_partitioned():
+    # 同じ総量(n_e*P_e=100)を1自治体にまとめても、2自治体(60+40)に分割しても、
+    # 階層内のphiと重みシェアは変わらない——階層内で先に合計してから平方根を
+    # 取る新定義の核心(2026-09に再設計、notes/new_index_formula.tex参照)。
+    one_unit = [("市区町村議会", 100.0, {"自由民主党": 0.7, "公明党": 0.3})]
+    two_units = [
+        ("市区町村議会", 60.0, {"自由民主党": 0.7, "公明党": 0.3}),
+        ("市区町村議会", 40.0, {"自由民主党": 0.7, "公明党": 0.3}),
+    ]
+    c_p_one, share_one = monthly_index._level_aggregate(one_unit)
+    c_p_two, share_two = monthly_index._level_aggregate(two_units)
+    assert c_p_one == c_p_two
+    assert share_one == share_two
+
+
+def test_level_aggregate_combines_levels_via_sqrt_of_level_totals():
+    # 都道府県知事(raw=100)と市区町村議会(raw=400)の2階層。
+    # 階層の重みはsqrt(100)=10とsqrt(400)=20なので、10:20の比で合成される。
+    entries = [
+        ("都道府県知事", 100.0, {"自由民主党": 1.0}),
+        ("市区町村議会", 400.0, {"公明党": 1.0}),
+    ]
+    c_p, share = monthly_index._level_aggregate(entries)
+    assert c_p["自由民主党"] == pytest.approx(10 / 30)
+    assert c_p["公明党"] == pytest.approx(20 / 30)
+    assert share["都道府県知事"] == pytest.approx(1 / 3)
+    assert share["市区町村議会"] == pytest.approx(2 / 3)
+
+
+def test_level_aggregate_weights_events_within_a_level_by_raw_ne_pe_not_sqrt():
+    # 階層内は平方根を取らない加重平均であることの確認(60:40の比のまま)。
+    entries = [
+        ("市区町村議会", 60.0, {"自由民主党": 1.0}),
+        ("市区町村議会", 40.0, {"公明党": 1.0}),
+    ]
+    c_p, _ = monthly_index._level_aggregate(entries)
+    assert c_p["自由民主党"] == pytest.approx(0.6)
+    assert c_p["公明党"] == pytest.approx(0.4)
+
+
+def test_level_aggregate_empty_when_no_entries():
+    assert monthly_index._level_aggregate([]) == ({}, {})
 
 
 def test_month_range_crosses_year_boundary():

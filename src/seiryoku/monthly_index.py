@@ -12,15 +12,42 @@
 $\\sqrt{P_j}$で加重する方式にした——ある月にどれだけの人口を代表する選挙が
 動いたか、その勝者の政党構成で$C_p(t)$を決める。
 
-$$C_p(T) = \\frac{\\displaystyle\\sum_{e:\\, 投票日(e)\\in T} \\sqrt{n_eP_{e}}\\cdot\\mathbb{1}[党(e)=p]}
-                  {\\displaystyle\\sum_{e:\\, 投票日(e)\\in T} \\sqrt{n_eP_{e}}}$$
-
 ここで$e$はその月($T$)に投票日があった選挙イベント(知事選・市区町村長選・
 都道府県議会選・市区町村議会選・衆院選・参院選)、$P_e$はその選挙が代表する
 人口(自治体の場合はその自治体の人口、国会の場合は全国人口)、$n_e$はその
 選挙で決まる議席・ポストの数(知事・市区町村長選は常に1、議会選挙・衆院選・
 参院選は実際の議席数)。選挙が無かった月は$C_p(T)$自体が定義できない
 (欠測とする)。
+
+2026-09にユーザー指摘・再設計: 当初はイベントごとに$\\sqrt{n_eP_e}$を計算して
+単純合計していたが、平方根は凹関数のため、同じ人口を47都道府県のような
+少数の大きな単位に集約するより、1700超の市区町村のような多数の小さな単位に
+分割した方が$\\sum_e\\sqrt{P_e}$の合計が大きくなる($\\sqrt{a}+\\sqrt{b}>\\sqrt{a+b}$、
+$a,b>0$)。実際、市区町村議会だけで平均52.9\\%を占め、ほぼ毎月どこかで選挙が
+ある都道府県知事は平均3.0\\%にしかならないことが判明した——これは市区町村議会の
+政治的重要性ではなく、単に行政区画を何個に分けているかというアーティファクト
+だった(ペンローズの平方根則は本来「単位の数が固定された1つの代表機関の中」で
+正当化される理論であり、単位の数も粒度も異なる複数階層をまたいだ単純合計に
+転用したのが原因)。
+
+そこで、階層$\\ell\\in L=\\{$衆院選, 参院選, 都道府県知事, 都道府県議会,
+市区町村長, 市区町村議会$\\}$をそれぞれ1つの代表機関とみなし、階層の中では
+平方根を取らずに$n_eP_e$そのもので加重平均した政党別シェア$\\phi_p^\\ell(T)$を
+求め、階層をまたぐ合成のときだけ$\\sqrt{}$を1回かける形に改めた
+(導出はnotes/new\\_index\\_formula.tex参照)。
+
+$$N_\\ell(T) = \\sum_{e\\in E_\\ell(T)} n_eP_e, \\qquad
+  W_\\ell(T) = \\sqrt{N_\\ell(T)}, \\qquad
+  \\phi_p^\\ell(T) = \\frac{\\displaystyle\\sum_{e\\in E_\\ell(T)} n_eP_e\\,\\phi_p(e)}{N_\\ell(T)}$$
+
+$$C_p(T) = \\frac{\\displaystyle\\sum_{\\ell\\in L} W_\\ell(T)\\,\\phi_p^\\ell(T)}
+                  {\\displaystyle\\sum_{\\ell\\in L} W_\\ell(T)}$$
+
+ここで$E_\\ell(T)$は階層$\\ell$で投票日が$T$に含まれる選挙イベントの集合。
+該当イベントが無い階層は和から除外する。$N_\\ell(T)$を先に合計してから
+$W_\\ell(T)$の平方根を1回だけ取ることで、同じ$N_\\ell(T)$をいくつの自治体に
+分割していても$\\phi_p^\\ell(T)$・$W_\\ell(T)$ともに変わらなくなる
+(design_document.tex \\S2.7参照)。
 
 首長選挙は常に$n_e=1$なので$\\sqrt{n_eP_e}=\\sqrt{P_e}$のままだが、国会の
 選挙だけは実際の議席数(衆院選なら465、参院選の半数改選なら実際の改選数)を
@@ -71,6 +98,7 @@ diet_history.fetch_sangiin_election_history()に切り替えた。このファ�
 """
 from __future__ import annotations
 
+import math
 import re
 from dataclasses import dataclass
 from datetime import date
@@ -82,7 +110,6 @@ from .index import (
     _latest_shugiin_district_pct,
     _phi,
     national_parties_meeting_requirement,
-    weighted_share_by_jurisdiction,
 )
 
 MIN_YEAR = 2018
@@ -168,8 +195,6 @@ def build_month_snapshots(
     空リストに差し替えるモンキーパッチで代用していたが、そのやり方は呼び出し側の
     コードを書き換える必要がありテストしにくいため、正式なパラメータに昇格した。
     """
-    import math
-
     from . import municipal_registry, turnover
     from .fetch import jichisoken
 
@@ -228,25 +253,22 @@ def build_month_snapshots(
     today = date.today()
     months = _month_range((min_year, 1), (today.year, today.month))
 
-    # 月ごとの生イベント(shares, weight)をまず作っておき、window_months分だけ
-    # 遡って合算する(スライディングウィンドウ、2026-09にユーザー指示で追加)。
-    # type_weight_by_monthは同じイベントを(選挙種別ラベル, weight)として並行して
-    # 記録したもので、図1中段の「重みシェアの内訳」を出すために使う
-    # (2026-09にユーザー指示、以前は別スクリプトで同じ集計をやり直していた)。
-    entries_by_month: dict[tuple[int, int], list[tuple[dict[str, float], float]]] = {}
-    type_weight_by_month: dict[tuple[int, int], list[tuple[str, float]]] = {}
+    # 月ごとの生イベント(level_type, raw_weight=n_e*P_e, shares)をまず作って
+    # おき、window_months分だけ遡って合算する(スライディングウィンドウ、
+    # 2026-09にユーザー指示で追加)。raw_weightは平方根を取る前のn_e*P_eの
+    # ままにしておき、階層ごとに合計してから1回だけ平方根を取る
+    # (_level_aggregate参照、2026-09にユーザー指摘で再設計、
+    # notes/new_index_formula.tex参照)。
+    entries_by_month: dict[tuple[int, int], list[tuple[str, float, dict[str, float]]]] = {}
     for ym in months:
-        entries: list[tuple[dict[str, float], float]] = []
-        type_weights: list[tuple[str, float]] = []
+        entries: list[tuple[str, float, dict[str, float]]] = []
 
         for name, parsed, size, by_year, level_type in local_entries:
             for term in _terms_in_month(parsed, ym):
                 endorsement = jichisoken.endorsement_for_vote_year(by_year, name, term["vote_date"])
                 endorsing = endorsement.endorsing_parties if endorsement else []
                 shares = _effective_party_shares(term["party"], endorsing, national_parties)
-                w = math.sqrt(size)
-                entries.append((shares, w))
-                type_weights.append((level_type, w))
+                entries.append((level_type, size, shares))  # 首長選挙は常にn_e=1
 
         for parsed, size, level_type in gikai_local_entries:
             for term in _terms_in_month(parsed, ym):
@@ -254,27 +276,20 @@ def build_month_snapshots(
                 n_e = sum(seats.values())
                 if n_e == 0:
                     continue
-                w = math.sqrt(n_e * size)
-                entries.append((_phi(seats, national_parties), w))
-                type_weights.append((level_type, w))
+                entries.append((level_type, n_e * size, _phi(seats, national_parties)))
 
         for date_key, seats in sangiin_entries:
             if date_key == ym:
                 n_e = sum(seats.values())
-                w = math.sqrt(n_e * national_pop)
-                entries.append((_phi(seats, national_parties), w))
-                type_weights.append(("参院選", w))
+                entries.append(("参院選", n_e * national_pop, _phi(seats, national_parties)))
         for date_key, seats in shugiin_entries:
             if date_key == ym:
                 n_e = sum(seats.values())
-                w = math.sqrt(n_e * national_pop)
-                entries.append((_phi(seats, national_parties), w))
-                type_weights.append(("衆院選", w))
+                entries.append(("衆院選", n_e * national_pop, _phi(seats, national_parties)))
 
         entries_by_month[ym] = entries
-        type_weight_by_month[ym] = type_weights
 
-    return _snapshots_from_windows(entries_by_month, type_weight_by_month, months, window_months)
+    return _snapshots_from_windows(entries_by_month, months, window_months)
 
 
 def _months_back(ym: tuple[int, int], n: int) -> list[tuple[int, int]]:
@@ -289,21 +304,52 @@ def _months_back(ym: tuple[int, int], n: int) -> list[tuple[int, int]]:
     return result
 
 
-def _level_weight_share(type_weights: list[tuple[str, float]]) -> dict[str, float]:
-    """[(選挙種別ラベル, weight)]から種別ごとの重みシェアを求める。全体の重みが
-    0(local_only=Trueで国政選挙が窓内に無い等)の場合は空dictを返す。"""
-    totals = {t: 0.0 for t in LEVEL_TYPES}
-    for label, w in type_weights:
-        totals[label] = totals.get(label, 0.0) + w
-    grand_total = sum(totals.values())
-    if not grand_total:
-        return {}
-    return {t: v / grand_total for t, v in totals.items()}
+def _level_aggregate(
+    window_entries: list[tuple[str, float, dict[str, float]]],
+) -> tuple[dict[str, float], dict[str, float]]:
+    """階層内で先にn_eP_eを合計してから平方根を1回だけ取る、新しい$C_p(T)$の
+    定義(2026-09に再設計、notes/new_index_formula.tex参照)。
+
+    まず階層ごとに$N_\\ell(T)=\\sum_e n_eP_e$を求め、階層内の政党別シェア
+    $\\phi_p^\\ell(T)$は(平方根を取らない)$n_eP_e$そのもので加重平均する
+    ——同じ$N_\\ell(T)$をいくつの自治体に分割していても値が変わらないように
+    するため。階層をまたぐ合成のときだけ$W_\\ell(T)=\\sqrt{N_\\ell(T)}$を
+    重みとして使う。戻り値は(C_p, level_weight_share)のタプルで、
+    level_weight_shareは$W_\\ell(T)$を正規化したもの(図1中段の内訳表示用)。
+    該当イベントが1件も無ければ両方とも空dictを返す。"""
+    raw_totals: dict[str, float] = {}
+    party_totals: dict[str, dict[str, float]] = {}
+    for level_type, raw_weight, shares in window_entries:
+        raw_totals[level_type] = raw_totals.get(level_type, 0.0) + raw_weight
+        level_party_totals = party_totals.setdefault(level_type, {})
+        for party, share in shares.items():
+            level_party_totals[party] = level_party_totals.get(party, 0.0) + raw_weight * share
+
+    level_weights: dict[str, float] = {}
+    phi_by_level: dict[str, dict[str, float]] = {}
+    for level_type, total in raw_totals.items():
+        if total <= 0:
+            continue
+        level_weights[level_type] = math.sqrt(total)
+        phi_by_level[level_type] = {p: v / total for p, v in party_totals[level_type].items()}
+
+    total_weight = sum(level_weights.values())
+    if not total_weight:
+        return {}, {}
+
+    C_p: dict[str, float] = {}
+    for level_type, w in level_weights.items():
+        for party, phi in phi_by_level[level_type].items():
+            C_p[party] = C_p.get(party, 0.0) + w * phi
+    C_p = {p: v / total_weight for p, v in C_p.items()}
+
+    level_weight_share = {t: level_weights.get(t, 0.0) / total_weight for t in LEVEL_TYPES}
+    level_weight_share = {t: v for t, v in level_weight_share.items() if v > 0}
+    return C_p, level_weight_share
 
 
 def _snapshots_from_windows(
-    entries_by_month: dict[tuple[int, int], list[tuple[dict[str, float], float]]],
-    type_weight_by_month: dict[tuple[int, int], list[tuple[str, float]]],
+    entries_by_month: dict[tuple[int, int], list[tuple[str, float, dict[str, float]]]],
     months: list[tuple[int, int]],
     window_months: int,
 ) -> list[MonthSnapshot]:
@@ -311,20 +357,19 @@ def _snapshots_from_windows(
     for ym in months:
         if ym not in entries_by_month:
             continue
-        window_entries: list[tuple[dict[str, float], float]] = []
-        window_type_weights: list[tuple[str, float]] = []
+        window_entries: list[tuple[str, float, dict[str, float]]] = []
         for w in _months_back(ym, window_months):
             window_entries.extend(entries_by_month.get(w, []))
-            window_type_weights.extend(type_weight_by_month.get(w, []))
         if not window_entries:
             continue
+        C_p, level_weight_share = _level_aggregate(window_entries)
         results.append(
             MonthSnapshot(
                 year=ym[0],
                 month=ym[1],
-                C_p=weighted_share_by_jurisdiction(window_entries),
+                C_p=C_p,
                 n_events=len(window_entries),
-                level_weight_share=_level_weight_share(window_type_weights),
+                level_weight_share=level_weight_share,
             )
         )
     return results

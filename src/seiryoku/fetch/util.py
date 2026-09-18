@@ -16,8 +16,13 @@ _UA = "seiryoku-shisu-bot/0.1 (+https://github.com/; personal research project)"
 # ホストごとの最小リクエスト間隔(秒)。go2senkyo.comはボット検知(AWS WAF)で
 # 短時間に連続アクセスするとチャレンジ応答(HTTP 202・本文空)を返すことを確認済み
 # ([[seiryoku_shisu_design]]参照)なので、他のホストより間隔を空ける。
+# 4.0秒では約1788件中40件に1件程度の頻度でWAFチャレンジが発生し、そのたびに
+# 11分のクールダウンが挟まるため、体感の実効速度は間隔だけから期待される
+# 5分の1程度に落ち込んでいた(2026-09、更新クロールの実行速度をユーザーと
+# 調査して発覚)。間隔を広げてブロック頻度自体を下げられるか試すため8.0秒に
+# 変更した。
 _MIN_INTERVAL = {
-    "go2senkyo.com": 4.0,
+    "go2senkyo.com": 8.0,
 }
 _DEFAULT_INTERVAL = 0.2
 _last_request_time: dict[str, float] = {}
@@ -51,6 +56,11 @@ def _wait_out_shared_block(host: str) -> None:
     until = _blocked_until.get(host, 0.0)
     remaining = until - time.time()
     if remaining > 0:
+        # WAFブロックのクールダウン待ちは無言だと「なぜ遅いか」が全く分からなく
+        # なるため、必ず出力する(2026-09、更新クロールが想定の5倍遅い原因を
+        # 調査した際にユーザー指摘——このprintが無く、実際に起きていても
+        # ログに一切残らなかった)。
+        print(f"[waf] {host}への次のアクセスまで{remaining:.0f}秒待機します", flush=True)
         time.sleep(remaining)
 
 
@@ -75,12 +85,14 @@ def fetch(url: str, *, force: bool = False, retries: int = 1) -> bytes:
         try:
             resp = requests.get(url, headers={"User-Agent": _UA}, timeout=30)
         except requests.exceptions.RequestException as e:
+            print(f"[waf] {host}への接続エラーを検知、{_WAF_COOLDOWN_SECONDS}秒のクールダウンに入ります: {e}", flush=True)
             _blocked_until[host] = time.time() + _WAF_COOLDOWN_SECONDS
             if attempt < retries:
                 _wait_out_shared_block(host)
                 continue
             raise WafChallengeError(f"接続エラーが解消しませんでした: {url}: {e}") from e
         if resp.headers.get("x-amzn-waf-action") == "challenge":
+            print(f"[waf] {host}のWAFチャレンジ応答を検知、{_WAF_COOLDOWN_SECONDS}秒のクールダウンに入ります", flush=True)
             _blocked_until[host] = time.time() + _WAF_COOLDOWN_SECONDS
             if attempt < retries:
                 _wait_out_shared_block(host)

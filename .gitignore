@@ -5,3 +5,13 @@ __pycache__/
 *.aux
 *.log
 *.out
+
+# 更新クロール(refresh_cli.py)の実行中だけ存在する一時状態。中断・再開の
+# チェックポイントであり、恒久的な履歴データ(cp_history.json等)ではないため
+# gitでは追跡しない。
+data/refresh_cli.lock
+data/refresh_cli_done.json
+data/refresh_cli_head_done.json
+data/refresh_cli_gikai_done.json
+data/term_chain_refresh_progress.json
+data/gikai_term_chain_refresh_progress.json

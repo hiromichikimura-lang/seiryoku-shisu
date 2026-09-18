@@ -1,0 +1,9 @@
+[Unit]
+Description=党勢指数の更新クロール未完了チェックを毎日11時に実行する(一時的な監視用)
+
+[Timer]
+OnCalendar=*-*-* 11:00:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target
